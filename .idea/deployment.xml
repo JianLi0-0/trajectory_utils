@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" remoteFilesAllowedToDisappearOnAutoupload="false" showNewOnSourceInSync="false" showNewOnTargetInSync="false">
+    <serverData>
+      <paths name="234">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping local="/usr/src/googletest" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="Honymow (e58aeee5-c310-4839-aecf-775110ef109c)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/userdata/workdir/nav-lee" local="$PROJECT_DIR$" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/clion/build" />
+            <excludedPath local="true" path="$PROJECT_DIR$/../build" />
+            <excludedPath local="true" path="$PROJECT_DIR$/../docker/build" />
+            <excludedPath local="true" path="$PROJECT_DIR$/../build" />
+            <excludedPath local="true" path="$PROJECT_DIR$/arm/build" />
+            <excludedPath local="true" path="$PROJECT_DIR$/../docker/build" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+      <paths name="YF-0016">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping local="/usr/src/googletest" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="anji-241">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping local="/usr/src/googletest" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="honymow">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/RS800_MOWING_ROBOT/install/lib" local="$PROJECT_DIR$/arm/devel/lib" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="local_machine">
+        <serverdata>
+          <mappings>
+            <mapping local="/usr/src/googletest" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="nanjing-137">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping local="/usr/src/googletest" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="nanjing-216">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping local="/usr/src/googletest" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+  </component>
+</project>

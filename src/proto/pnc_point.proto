@@ -1,0 +1,102 @@
+/* 编译指令: protoc -I. *.proto --cpp_out=. */
+
+syntax = "proto3";
+
+package trajectory_utils;
+
+message SLPoint {
+  double s = 1;
+  double l = 2;
+}
+
+message FrenetFramePoint {
+  double s = 1;
+  double l = 2;
+  double dl = 3;
+  double ddl = 4;
+}
+
+message SpeedPoint {
+  double s = 1;
+  double t = 2;
+  // speed (m/s)
+  double v = 3;
+  // acceleration (m/s^2)
+  double a = 4;
+  // jerk (m/s^3)
+  double da = 5;
+}
+
+message Pose {
+  double x = 1;
+  double y = 2;
+  double heading= 3;
+}
+
+message Point2D {
+  double x = 1;                   // x轴坐标
+  double y = 2;                   // y轴坐标
+}
+
+message PathPoint {
+  // coordinates
+  double x = 1;
+  double y = 2;
+  double z = 3;
+
+  // direction on the x-y plane
+  double theta = 4;
+  // curvature on the x-y planning
+  double kappa = 5;
+  // accumulated distance from beginning of the path
+  double s = 6;
+
+  // derivative of kappa w.r.t s.
+  double dkappa = 7;
+  // derivative of derivative of kappa w.r.t s.
+  double ddkappa = 8;
+  // The lane ID where the path point is on
+  string lane_id = 9;
+
+  // derivative of x and y w.r.t parametric parameter t in CosThetareferenceline
+  double x_derivative = 10;
+  double y_derivative = 11;
+
+  // for tractor-trailer model
+  double x_t = 15; // FLU
+  double y_t = 16; // FLU
+  double theta1 = 17; // FLU
+  double kappa_t = 18;
+  double s_t = 19;
+  double dkappa_t = 20;
+  double ddkappa_t = 21;
+}
+
+message Path {
+  string name = 1;
+  repeated PathPoint path_point = 2;
+}
+
+message TrajectoryPoint {
+  // path point
+  PathPoint path_point = 1;
+  // linear velocity
+  double v = 2; // in [m/s]
+  // linear acceleration
+  double a = 3;
+  // relative time from beginning of the trajectory
+  double relative_time = 4;
+  // longitudinal jerk
+  double da = 5;
+  // The angle between vehicle front wheel and vehicle longitudinal axis
+  double steer = 6;
+  double steer_mode = 7;
+
+  // true : reverse
+  bool reverse = 8;
+}
+
+message Trajectory {
+  string name = 1;
+  repeated TrajectoryPoint trajectory_point = 2;
+}

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="596b8bf4-42f4-4ff4-83ec-8c81664be2cf" name="nanjing-137" url="http://39.108.8.221">
+        <fileTransfer accessType="SFTP" host="39.108.8.221" port="9137" sshConfigId="150d38a6-3e46-4400-8738-66e8f378a98c" sshConfig="honymow@39.108.8.221:9137 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="71ef9df0-a561-4679-9fa6-0dee90c4a326" name="honymow">
+        <fileTransfer rootFolder="/userdata/workdir/" accessType="SFTP" host="10.42.0.1" port="22" sshConfigId="5ae5979f-a7d2-4248-afa0-32d5dbf560f5" sshConfig="honymow@10.42.0.1:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" isUseSudo="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="1655dca9-d56c-4612-84c3-aee6921ef19e" name="local_machine" url="http://localhost">
+        <fileTransfer mountedRoot="$PROJECT_DIR$/../../../.." accessType="MOUNT" port="0" />
+      </webServer>
+      <webServer id="f06973f0-e6f1-48a5-8289-af69545049e6" name="nanjing-216" url="http://39.108.8.221">
+        <fileTransfer accessType="SFTP" host="39.108.8.221" port="9216" sshConfigId="9443cb57-39d9-4061-9aff-72ba63546d05" sshConfig="honymow@39.108.8.221:9216 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="e77304b2-c2f5-405b-a213-7bb6d3ddbab7" name="anji-241">
+        <fileTransfer accessType="SFTP" host="39.108.8.221" port="9241" sshConfigId="6f16b380-c66e-4231-a9da-90378f8bf502" sshConfig="honymow@39.108.8.221:9241 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="4d81a0b5-f515-4296-94e6-45f0d5178a41" name="YF-0016">
+        <fileTransfer accessType="SFTP" host="39.108.8.221" port="9416" sshConfigId="13c9c874-2be5-4e30-a54f-e704d9700e6a" sshConfig="honymow@39.108.8.221:9416 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="1235ac39-8426-459b-921f-c5048609c3b3" name="234">
+        <fileTransfer accessType="SFTP" host="39.108.8.221" port="9234" sshConfigId="383164cb-676f-4dce-bdbf-4c27834a963d" sshConfig="honymow@39.108.8.221:9234 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

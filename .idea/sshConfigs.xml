@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="SshConfigs">
+    <configs>
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:300}" host="10.42.0.1" id="5ae5979f-a7d2-4248-afa0-32d5dbf560f5" port="22" nameFormat="DESCRIPTIVE" username="honymow" useOpenSSHConfig="true" />
+      <sshConfig authType="PASSWORD" host="39.108.8.221" id="150d38a6-3e46-4400-8738-66e8f378a98c" port="9137" nameFormat="DESCRIPTIVE" username="honymow" useOpenSSHConfig="true" />
+      <sshConfig authType="PASSWORD" host="39.108.8.221" id="13c9c874-2be5-4e30-a54f-e704d9700e6a" port="9416" nameFormat="DESCRIPTIVE" username="honymow" useOpenSSHConfig="true" />
+      <sshConfig authType="PASSWORD" host="39.108.8.221" id="9443cb57-39d9-4061-9aff-72ba63546d05" port="9216" nameFormat="DESCRIPTIVE" username="honymow" useOpenSSHConfig="true" />
+      <sshConfig authType="PASSWORD" host="39.108.8.221" id="6f16b380-c66e-4231-a9da-90378f8bf502" port="9241" nameFormat="DESCRIPTIVE" username="honymow" useOpenSSHConfig="true" />
+      <sshConfig authType="PASSWORD" host="39.108.8.221" id="383164cb-676f-4dce-bdbf-4c27834a963d" port="9234" nameFormat="DESCRIPTIVE" username="honymow" useOpenSSHConfig="true" />
+    </configs>
+  </component>
+</project>
