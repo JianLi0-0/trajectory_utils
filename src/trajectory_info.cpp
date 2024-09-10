@@ -96,14 +96,22 @@ namespace trajectory_utils {
         return true;
     }
 
-    TrajectoryPoint TrajectoryInfo::getRefTrajectoryPoint(const Vec2d& position) {
+    bool TrajectoryInfo::getRefTrajectoryPoint(const Vec2d& position, TrajectoryPoint& ref_point) {
+        if (!reference_line_ptr_) {
+            ROS_WARN("Reference line is not set.");
+            return false;
+        }
+
+        if (!trajectory_ptr) {
+            ROS_WARN("Trajectory is not set.");
+            return false;
+        }
+
         double s, l, t;
-        std::array<double, 1> p, v, a;
         reference_line_ptr_->GetProjection(position, &s, &l);
-        std::cout << "s: " << s << std::endl;
-        std::cout << "l: " << l << std::endl;
+        std::cout << "s: " << s << ", l: " << l << std::endl;
         speed_data_.get_first_time_at_position(0, s, t);
-        std::cout << "t: " << t << std::endl;
-        return trajectory_ptr->Evaluate(t);
+        ref_point = trajectory_ptr->Evaluate(t);
+        return true;
     }
 } // trajectory_utils

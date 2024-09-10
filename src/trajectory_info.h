@@ -26,7 +26,7 @@ namespace trajectory_utils {
         DiscretizedPath* getPathDataPtr() { return &path_data_; }
         ruckig::Trajectory<1>* getSpeedDataPtr() { return &speed_data_; }
         ruckig::InputParameter<1>* getSpeedPlanningParamsPtr() { return &ruckig_input_; }
-        TrajectoryPoint getRefTrajectoryPoint(const Vec2d& position);
+        bool getRefTrajectoryPoint(const Vec2d& position, TrajectoryPoint& ref_point);
 
         private:
         std::shared_ptr<ReferenceLine> reference_line_ptr_;

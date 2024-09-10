@@ -39,7 +39,8 @@ int main(int argc, char **argv) {
 
     trajectory_info.combinePathAndSpeedProfile();
     auto discretized_trajectory = trajectory_info.getTrajectoryPtr();
-    auto traj_point = trajectory_info.getRefTrajectoryPoint(Vec2d(1.0, -0.2));
+    TrajectoryPoint traj_point;
+    trajectory_info.getRefTrajectoryPoint(Vec2d(1.0, -0.2), traj_point);
     std::cout << traj_point.DebugString() << std::endl;
     ROS_INFO("Time elapsed: %f", (ros::Time::now() - start_time).toSec());
 
