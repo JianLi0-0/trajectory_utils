@@ -14,7 +14,7 @@ namespace trajectory_utils {
         ruckig_input_.target_velocity = {0.0};
         ruckig_input_.target_acceleration = {0.0};
 
-        ruckig_input_.max_velocity = {1.5};
+        ruckig_input_.max_velocity = {1.75};
         ruckig_input_.max_acceleration = {2.0};
         ruckig_input_.max_jerk = {4.0};
 

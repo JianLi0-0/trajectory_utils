@@ -41,6 +41,10 @@ add_library(${PROJECT_NAME}
         src/math/line_segment2d.cpp
         src/proto/pnc_point.pb.cc)
 
+target_include_directories(${PROJECT_NAME} PUBLIC
+        src
+)
+
 target_link_libraries(${PROJECT_NAME}
         ${catkin_LIBRARIES}
         ruckig::ruckig
