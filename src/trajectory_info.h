@@ -16,6 +16,7 @@ namespace trajectory_utils {
         TrajectoryInfo();
         ~TrajectoryInfo() = default;
 
+        void reset();
         bool combinePathAndSpeedProfile();
         bool setPathData(const std::vector<PathPoint> &path_data);
         void setSpeedData(const ruckig::Trajectory<1> &speed_data) { speed_data_ = speed_data; }

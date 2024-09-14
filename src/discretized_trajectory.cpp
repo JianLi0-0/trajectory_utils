@@ -27,7 +27,7 @@ namespace trajectory_utils {
         if (it_lower == begin()) {
             return front();
         } else if (it_lower == end()) {
-            ROS_WARN("When evaluate trajectory, relative_time(%f) is too large", relative_time);
+//            ROS_WARN("When evaluate trajectory, relative_time(%f) is too large", relative_time);
             return back();
         }
         return common::math::InterpolateUsingLinearApproximation(

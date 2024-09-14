@@ -23,6 +23,17 @@ namespace trajectory_utils {
         ruckig_input_.min_acceleration = {-2.0};
     }
 
+    void TrajectoryInfo::reset() {
+        ROS_INFO("Reset trajectory info.");
+        reference_line_ptr_.reset();
+        trajectory_ptr.reset();
+        path_data_.clear();
+        speed_data_ = ruckig::Trajectory<1>();
+        ruckig_input_.current_position = {0.0};
+        ruckig_input_.current_velocity = {0.0};
+        ruckig_input_.current_acceleration = {0.0};
+    }
+
     bool TrajectoryInfo::setPathData(const std::vector<PathPoint> &path_data) {
         if (!DiscretePointsMath::computePathInfo(path_data, path_data_)) {
             ROS_ERROR("Fail to compute path info.");
