@@ -14,7 +14,7 @@ namespace trajectory_utils {
         ruckig_input_.target_velocity = {0.0};
         ruckig_input_.target_acceleration = {0.0};
 
-        ruckig_input_.max_velocity = {1.75};
+//        ruckig_input_.max_velocity = {1.75};
         ruckig_input_.max_acceleration = {2.0};
         ruckig_input_.max_jerk = {4.0};
 
@@ -51,11 +51,12 @@ namespace trajectory_utils {
     }
 
     bool TrajectoryInfo::calSpeedData(const double& cur_pos, const double& cur_speed,
-                                      const double& cur_acc, const double& tar_pos) {
+                                      const double& cur_acc, const double& tar_pos, const double& max_speed) {
         ruckig_input_.current_position[0] = cur_pos;
         ruckig_input_.current_velocity[0] = cur_speed;
         ruckig_input_.current_acceleration[0] = cur_acc;
         ruckig_input_.target_position[0] = tar_pos;
+        ruckig_input_.max_velocity[0] = max_speed;
 
         auto result = ruckig_otg_.calculate(ruckig_input_, speed_data_);
 
