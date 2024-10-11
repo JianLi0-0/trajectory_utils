@@ -49,6 +49,9 @@ target_link_libraries(${PROJECT_NAME}
         ${catkin_LIBRARIES}
         ruckig::ruckig
         protobuf
+        Python3::Python
+        Python3::Module
+        Python3::NumPy
 )
 
 add_executable(trajectory_info_test src/test.cpp)
@@ -60,4 +63,10 @@ target_link_libraries(trajectory_info_test
         Python3::Python
         Python3::Module
         Python3::NumPy
+)
+
+install(TARGETS ${PROJECT_NAME}
+        ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+        LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+        RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

@@ -1,10 +1,11 @@
 #include "trajectory_info.h"
+#include "matplotlibcpp.h"
+
+namespace plt = matplotlibcpp;
 
 namespace trajectory_utils {
 
     TrajectoryInfo::TrajectoryInfo() {
-        trajectory_ptr = std::shared_ptr<DiscretizedTrajectory>(
-                new DiscretizedTrajectory());
 
         ruckig_input_.current_position = {0.0};
         ruckig_input_.current_velocity = {0.0};
@@ -15,12 +16,12 @@ namespace trajectory_utils {
         ruckig_input_.target_acceleration = {0.0};
 
 //        ruckig_input_.max_velocity = {1.75};
-        ruckig_input_.max_acceleration = {2.0};
-        ruckig_input_.max_jerk = {4.0};
+        ruckig_input_.max_acceleration = {0.5};
+        ruckig_input_.max_jerk = {1.0};
 
         // Set different constraints for negative direction
         ruckig_input_.min_velocity = {-1e-3};
-        ruckig_input_.min_acceleration = {-2.0};
+        ruckig_input_.min_acceleration = {-0.5};
     }
 
     void TrajectoryInfo::reset() {
@@ -125,5 +126,62 @@ namespace trajectory_utils {
         speed_data_.get_first_time_at_position(0, s, t);
         ref_point = trajectory_ptr->Evaluate(t);
         return true;
+    }
+
+    bool TrajectoryInfo::findKappaMax(const double& max_s, double& max_kappa) {
+        max_kappa = 0.0;
+        for (auto p:path_data_) {
+            if (p.s() > max_s) {
+                break;
+            }
+            double kappa_abs = std::fabs(p.kappa());
+            if (kappa_abs > max_kappa) {
+                max_kappa = kappa_abs;
+            }
+        }
+        return true;
+    }
+
+    void TrajectoryInfo::displayTrajProfile() {
+
+        if (!trajectory_ptr) {
+            ROS_WARN("Trajectory is not set.");
+            return;
+        }
+
+        std::vector<double> t_vec;
+        double time_span = getSpeedDataPtr()->get_duration();
+        for (double t=0.0;t<=time_span;t+=0.01) {
+            t_vec.push_back(t);
+        }
+
+        std::vector<double> x_traj_vec, y_traj_vec, s_traj_vec, v_traj_vec, a_traj_vec, kappa_traj_vec;
+        x_traj_vec.reserve(t_vec.size());
+        y_traj_vec.reserve(t_vec.size());
+        s_traj_vec.reserve(t_vec.size());
+        v_traj_vec.reserve(t_vec.size());
+        a_traj_vec.reserve(t_vec.size());
+        kappa_traj_vec.reserve(t_vec.size());
+        for (auto t : t_vec) {
+            auto traj_point = trajectory_ptr->Evaluate(t);
+            x_traj_vec.push_back(traj_point.path_point().x());
+            y_traj_vec.push_back(traj_point.path_point().y());
+            s_traj_vec.push_back(traj_point.path_point().s());
+            kappa_traj_vec.push_back(traj_point.path_point().kappa());
+            v_traj_vec.push_back(traj_point.v());
+            a_traj_vec.push_back(traj_point.a());
+        }
+
+        plt::figure_size(640, 640);
+        plt::plot(t_vec, s_traj_vec);
+        plt::plot(t_vec, v_traj_vec);
+        plt::plot(t_vec, a_traj_vec);
+        plt::plot(t_vec, kappa_traj_vec);
+//        plt::plot(x_traj_vec, y_traj_vec);
+        plt::title("Traj Profile");
+        plt::grid(true);
+
+        plt::show();
+
     }
 } // trajectory_utils
