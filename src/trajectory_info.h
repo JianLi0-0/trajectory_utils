@@ -21,7 +21,9 @@ namespace trajectory_utils {
         bool setPathData(const std::vector<PathPoint> &path_data);
         void setSpeedData(const ruckig::Trajectory<1> &speed_data) { speed_data_ = speed_data; }
         bool calSpeedData(const double& cur_pos, const double& cur_speed,
-                          const double& cur_acc, const double& tar_pos, const double& max_speed=1.75);
+                          const double& cur_acc, const double& tar_pos,
+                          const double& max_speed=1.75, const double& max_jerk=1.0,
+                          const double& max_acc=0.5, const double& min_acc=-0.5);
 
         std::shared_ptr<DiscretizedTrajectory> getTrajectoryPtr() { return trajectory_ptr; }
         DiscretizedPath* getPathDataPtr() { return &path_data_; }
