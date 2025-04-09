@@ -48,6 +48,7 @@ namespace trajectory_utils {
             curvature_speed_limit_.avoid_obs_vel_max = avoid_obs_vel_max;
             curvature_speed_limit_.avoid_obs_kappa_max = avoid_obs_kappa_max;
         }
+        void displayUpdate(const double& x, const double& y);
 
         private:
         std::shared_ptr<ReferenceLine> reference_line_ptr_;

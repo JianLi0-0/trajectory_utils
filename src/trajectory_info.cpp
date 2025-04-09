@@ -172,7 +172,12 @@ namespace trajectory_utils {
             a_traj_vec.push_back(traj_point.a());
         }
 
-        plt::figure_size(640, 640);
+        static bool flag = true;
+        if (flag) {
+            flag = false;
+            plt::figure_size(640, 640);
+        }
+        plt::clf();
         plt::plot(t_vec, s_traj_vec);
         plt::plot(t_vec, v_traj_vec);
         plt::plot(t_vec, a_traj_vec);
@@ -181,8 +186,17 @@ namespace trajectory_utils {
         plt::title("Traj Profile");
         plt::grid(true);
 
-        plt::show();
+        plt::show(false);
+        plt::pause(0.001);
 
+    }
+
+    void TrajectoryInfo::displayUpdate(const double& x, const double& y) {
+        std::vector<double> x_vec, y_vec;
+        x_vec.push_back(x);
+        y_vec.push_back(y);
+        plt::scatter(x_vec, y_vec, 10.0, {{"color", "red"}});
+        plt::pause(0.001);
     }
 
     bool TrajectoryInfo::longitudinalSpeedPlanning(

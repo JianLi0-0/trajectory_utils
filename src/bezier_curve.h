@@ -127,9 +127,6 @@ std::vector<geometry_msgs::PoseStamped> kappaConstrainedBezierCurve(
     r_p0.pose.orientation.w = 1.0;
     r_p4.pose = transformPose(points.front().pose, points.back().pose, true);
 
-    cout << "transformPose(points.front().pose, points.back().pose, true): " << transformPose(points.front().pose, points.back().pose, true);
-    cout << "r_p4: " << r_p4;
-
     double len = distance(points.front(), points.back());
     double d1 = 0.25 * len;
     double d4 = 0.1 * len;
