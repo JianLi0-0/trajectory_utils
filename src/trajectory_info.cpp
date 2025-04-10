@@ -16,12 +16,12 @@ namespace trajectory_utils {
         ruckig_input_.target_acceleration = {0.0};
 
 //        ruckig_input_.max_velocity = {1.75};
-//        ruckig_input_.max_acceleration = {0.5};
-//        ruckig_input_.max_jerk = {1.0};
+        ruckig_input_.max_acceleration = {0.8};
+        ruckig_input_.max_jerk = {1.0};
 
         // Set different constraints for negative direction
         ruckig_input_.min_velocity = {-1e-3};
-//        ruckig_input_.min_acceleration = {-0.5};
+        ruckig_input_.min_acceleration = {-1.0};
     }
 
     void TrajectoryInfo::reset() {
@@ -52,18 +52,12 @@ namespace trajectory_utils {
     }
 
     bool TrajectoryInfo::calSpeedData(const double& cur_pos, const double& cur_speed,
-                                      const double& cur_acc, const double& tar_pos,
-                                      const double& max_speed, const double& max_jerk,
-                                      const double& max_acc, const double& min_acc) {
+                                      const double& cur_acc, const double& tar_pos, const double& max_speed) {
         ruckig_input_.current_position[0] = cur_pos;
         ruckig_input_.current_velocity[0] = cur_speed;
         ruckig_input_.current_acceleration[0] = cur_acc;
         ruckig_input_.target_position[0] = tar_pos;
         ruckig_input_.max_velocity[0] = max_speed;
-
-        ruckig_input_.max_jerk = {max_jerk};
-        ruckig_input_.max_acceleration = {max_acc};
-        ruckig_input_.min_acceleration = {min_acc};
 
         auto result = ruckig_otg_.calculate(ruckig_input_, speed_data_);
 
@@ -189,5 +183,47 @@ namespace trajectory_utils {
 
         plt::show();
 
+    }
+
+    bool TrajectoryInfo::longitudinalSpeedPlanning(
+            const std::vector<geometry_msgs::PoseStamped>& path, const double& last_vel, double& output_vel) {
+        if (!getTrajectoryPtr()) {
+            ROS_INFO("Speed planning starts from the last linear velocity: %f.", last_vel);
+            traj_point_.set_a(0.0);
+            traj_point_.set_v(last_vel);
+        }
+
+        std::vector<trajectory_utils::PathPoint> path_data;
+        for (size_t i = 0; i < path.size(); ++i) {
+            trajectory_utils::PathPoint p;
+            p.set_x(path[i].pose.position.x);
+            p.set_y(path[i].pose.position.y);
+            path_data.push_back(p);
+        }
+        setPathData(path_data);
+        if (getPathDataPtr()->Length() < 0.3) {
+            ROS_WARN("The path is too short. Stop the robot.");
+            output_vel = 0.0;
+            return true;
+        }
+
+        // 纵向控制、曲率限速
+        double curvature = 1e-5;
+        findKappaMax(1.0, curvature);
+
+        curvature = curvature > curvature_speed_limit_.avoid_obs_kappa_min ? curvature : 0.0;
+        curvature = std::min(curvature, curvature_speed_limit_.avoid_obs_kappa_max);
+        double vel_limit = curvature_speed_limit_.avoid_obs_vel_min +
+                           (curvature_speed_limit_.avoid_obs_kappa_max - curvature) /
+                           curvature_speed_limit_.avoid_obs_kappa_max *
+                           (curvature_speed_limit_.cruise_speed - curvature_speed_limit_.avoid_obs_vel_min);
+
+        calSpeedData(0.0, traj_point_.v(), traj_point_.a(),
+                                      getPathDataPtr()->Length(), vel_limit);
+        combinePathAndSpeedProfile();
+        traj_point_ = getTrajectoryPtr()->Evaluate(0.1);
+
+        output_vel = traj_point_.v();
+        return true;
     }
 } // trajectory_utils
