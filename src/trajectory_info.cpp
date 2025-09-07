@@ -16,12 +16,12 @@ namespace trajectory_utils {
         ruckig_input_.target_acceleration = {0.0};
 
 //        ruckig_input_.max_velocity = {1.75};
-        ruckig_input_.max_acceleration = {0.8};
-        ruckig_input_.max_jerk = {1.0};
+        ruckig_input_.max_acceleration = {1.5};
+        ruckig_input_.max_jerk = {5.0};
 
         // Set different constraints for negative direction
         ruckig_input_.min_velocity = {-1e-3};
-        ruckig_input_.min_acceleration = {-1.0};
+        ruckig_input_.min_acceleration = {-3.0};
     }
 
     void TrajectoryInfo::reset() {
@@ -120,12 +120,50 @@ namespace trajectory_utils {
             return false;
         }
 
-        double s, l, t;
-        reference_line_ptr_->GetProjection(position, &s, &l);
-        std::cout << "s: " << s << ", l: " << l << std::endl;
-        speed_data_.get_first_time_at_position(0, s, t);
-        ref_point = trajectory_ptr->Evaluate(t);
+        // double s, l, t;
+        // reference_line_ptr_->GetProjection(position, &s, &l);
+        // std::cout << "s: " << s << ", l: " << l << std::endl;
+        // speed_data_.get_first_time_at_position(0, s, t);
+        // std::cout << "t: " << t;
+        // if (s<0.01) t=0;
+        // ref_point = trajectory_ptr->Evaluate(t);
+        auto ref_index = trajectory_ptr->QueryNearestPoint(position);
+        ref_point = trajectory_ptr->TrajectoryPointAt(ref_index);
         return true;
+    }
+
+    double TrajectoryInfo::getRefKappa(const Vec2d& position) {
+        double output_kappa = 0.0;
+
+        if (!trajectory_ptr) {
+            ROS_WARN("Trajectory is not set.");
+            return output_kappa;
+        }
+
+        auto ref_index = trajectory_ptr->QueryNearestPoint(position);
+        auto ref_point = trajectory_ptr->TrajectoryPointAt(ref_index);
+
+        if (ref_point.path_point().s() < 0.0 || ref_point.path_point().s() > trajectory_ptr->back().path_point().s()) {
+            ROS_WARN("The reference point s is out of bounds: %f , end s: %f",
+                ref_point.path_point().s(), trajectory_ptr->back().path_point().s());
+            return output_kappa;
+        }
+
+        if (!reference_line_ptr_) {
+            ROS_WARN("Reference line is not set.");
+            return output_kappa;
+        }
+
+        double s, l;
+        reference_line_ptr_->GetProjection(position, &s, &l);
+        if (l > 0.7) {
+            ROS_WARN("The lateral distance is too large: %f, s: %f", l, s);
+            return output_kappa;
+        }
+
+        output_kappa = ref_point.path_point().kappa();
+
+        return output_kappa;
     }
 
     bool TrajectoryInfo::findKappaMax(const double& max_s, double& max_kappa) {
@@ -200,7 +238,7 @@ namespace trajectory_utils {
     }
 
     bool TrajectoryInfo::longitudinalSpeedPlanning(
-            const std::vector<geometry_msgs::PoseStamped>& path, const double& last_vel, double& output_vel) {
+            const std::vector<geometry_msgs::PoseStamped>& path, const double& last_vel, double& output_vel, double max_speed, double time_interval) {
         if (!getTrajectoryPtr()) {
             ROS_INFO("Speed planning starts from the last linear velocity: %f.", last_vel);
             traj_point_.set_a(0.0);
@@ -222,20 +260,20 @@ namespace trajectory_utils {
         }
 
         // 纵向控制、曲率限速
-        double curvature = 1e-5;
-        findKappaMax(1.0, curvature);
-
-        curvature = curvature > curvature_speed_limit_.avoid_obs_kappa_min ? curvature : 0.0;
-        curvature = std::min(curvature, curvature_speed_limit_.avoid_obs_kappa_max);
-        double vel_limit = curvature_speed_limit_.avoid_obs_vel_min +
-                           (curvature_speed_limit_.avoid_obs_kappa_max - curvature) /
-                           curvature_speed_limit_.avoid_obs_kappa_max *
-                           (curvature_speed_limit_.cruise_speed - curvature_speed_limit_.avoid_obs_vel_min);
-
+        // double curvature = 1e-5;
+        // findKappaMax(1.0, curvature);
+        //
+        // curvature = curvature > curvature_speed_limit_.avoid_obs_kappa_min ? curvature : 0.0;
+        // curvature = std::min(curvature, curvature_speed_limit_.avoid_obs_kappa_max);
+        // double vel_limit = curvature_speed_limit_.avoid_obs_vel_min +
+        //                    (curvature_speed_limit_.avoid_obs_kappa_max - curvature) /
+        //                    curvature_speed_limit_.avoid_obs_kappa_max *
+        //                    (curvature_speed_limit_.avoid_obs_vel_max - curvature_speed_limit_.avoid_obs_vel_min);
+        // vel_limit = 1.5;
         calSpeedData(0.0, traj_point_.v(), traj_point_.a(),
-                                      getPathDataPtr()->Length(), vel_limit);
+                                      getPathDataPtr()->Length(), max_speed);
         combinePathAndSpeedProfile();
-        traj_point_ = getTrajectoryPtr()->Evaluate(0.1);
+        traj_point_ = getTrajectoryPtr()->Evaluate(time_interval);
 
         output_vel = traj_point_.v();
         return true;

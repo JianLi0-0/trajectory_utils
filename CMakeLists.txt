@@ -9,12 +9,14 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(ruckig REQUIRED)
-
+find_package(Eigen3 REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS
         Interpreter
         Development
         NumPy
 )
+
+add_subdirectory(qp_solver/osqp)
 
 catkin_package(
 #  INCLUDE_DIRS include
@@ -27,7 +29,14 @@ include_directories(
         include
         src
         ${catkin_INCLUDE_DIRS}
+        ${EIGEN3_INCLUDE_DIR}
+        qp_solver/osqp
+        qp_solver/osqp/include
+        qp_solver/osqp-eigen/include
 )
+
+set(OSQP_LIBRARY osqp)
+add_subdirectory(qp_solver/osqp-eigen)
 
 add_library(${PROJECT_NAME}
         src/trajectory_info.cpp
@@ -39,6 +48,7 @@ add_library(${PROJECT_NAME}
         src/math/math_utils.cpp
         src/math/vec2d.cpp
         src/math/line_segment2d.cpp
+        src/mpc.cpp
         src/proto/pnc_point.pb.cc)
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -52,6 +62,8 @@ target_link_libraries(${PROJECT_NAME}
         Python3::Python
         Python3::Module
         Python3::NumPy
+        osqp
+        OsqpEigen
 )
 
 add_executable(trajectory_info_test src/test.cpp)
