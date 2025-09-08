@@ -6,7 +6,7 @@
 #include <ros/ros.h>
 
 #define PI 3.1415926
-#define T 0.025
+#define MPC_TIME_STEP 0.025
 #define w0 1.0
 #define w1 0.5
 #define Ku 1
@@ -15,12 +15,15 @@
 
 using namespace Eigen;
 using namespace std;
-//USING_NAMESPACE_QPOASES
+
+#ifdef HAVE_QPOASES
+#include <qpOASES.hpp>
+using namespace qpOASES;
+#endif
 
 MatrixXd MPC::solve(
         Eigen::Vector3d X_k, std::vector<Eigen::Vector3d> X_r,
         std::vector<Eigen::Vector2d> U_r, const int N) {
-    //cout<<"current w : "<<w_max<<endl;
     auto start = std::chrono::high_resolution_clock::now();
     ////根据参考输入计算出的系数矩阵
     vector<MatrixXd> A_r(N), B_r(N), A_multiply1(N);
@@ -43,31 +46,24 @@ MatrixXd MPC::solve(
             R(i, i) = omega1_w_;
         }
     }
-//    cout<<"Ur 1 : "<<endl<<U_r[0]<<endl;
-//    cout<<"Xr 1 : "<<endl<<X_r[0]<<endl;
-//    cout<<"Xk : "<<endl<<X_k<<endl;
+
     for (int k = 0; k < N; k++) {
         A_r[k] = A_r_init;
         B_r[k] = B_r_init;
         A_r[k](0, 2) = -U_r[k](0) * sin(X_r[k](2));
         A_r[k](1, 2) = U_r[k](0) * cos(X_r[k](2));
-        Vector3d temp_vec = -T * A_r[k] * X_r[k];
+        Vector3d temp_vec = -MPC_TIME_STEP * A_r[k] * X_r[k];
         O_r.block<3, 1>(k * 3, 0) = temp_vec;
-        A_r[k] = eye_3 + T * A_r[k];
-        B_r[k](0, 0) = cos(X_r[k](2)) * T;
-        B_r[k](1, 0) = sin(X_r[k](2)) * T;
-        B_r[k](2, 1) = T;
+        A_r[k] = eye_3 + MPC_TIME_STEP * A_r[k];
+        B_r[k](0, 0) = cos(X_r[k](2)) * MPC_TIME_STEP;
+        B_r[k](1, 0) = sin(X_r[k](2)) * MPC_TIME_STEP;
+        B_r[k](2, 1) = MPC_TIME_STEP;
         X_ref.block<3, 1>(k * 3, 0) = X_r[k];
-//        cout<<"B_r "<<k+1<<" : "<<endl<<B_r[k]<<endl;
 
         if (k == 0) A_multiply1[k] = A_r[k];
         else A_multiply1[k] = A_multiply1[k - 1] * A_r[k];
         A_bar.block<3, 3>(3 * k, 0) = A_multiply1[k];
     }
-//    cout<<"Ar 1 : "<<endl<<A_r[0]<<endl;
-//    cout<<"Br 1 : "<<endl<<B_r[0]<<endl;
-//    cout<<"Or 1 : "<<endl<<O_r.block<3,1>(0,0)<<endl;
-//    cout<<"O_r : "<<endl<<O_r<<endl;
 
     for (int k = 0; k < N; k++) {
         B_bar.block<3, 2>(3 * k, 2 * k) = B_r[k];
@@ -79,52 +75,81 @@ MatrixXd MPC::solve(
         }
     }
 
-    //cout<<"C bar : "<<endl<<C_bar<<endl;
-
     MatrixXd E = A_bar * X_k + C_bar * O_r - X_ref;
     MatrixXd Hesse = 2 * (B_bar.transpose() * Q * B_bar + R);      ////Hesse矩阵
     VectorXd gradient = 2 * B_bar.transpose() * Q * E;       ////一次项系数
 
+    std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - start;
+    std::cout << "Problem formulation time taken: " << elapsed.count() << " ms" << std::endl;
 
-//    real_t H[2 * N * 2 * N], g[2 * N], A[2 * N], lb[2 * N], ub[2 * N], lbA[1], ubA[1];
-//    lbA[0] = N * (v_min + w_min) / Ku;
-//    ubA[0] = N * (v_max + w_max) / Kl;
-//    for (int i = 0; i < 2 * N; i++) {
-//        g[i] = gradient(i);
-//        A[i] = 1;
-//        if (i % 2 == 0) {
-//            lb[i] = v_min;
-//            ub[i] = v_max;
-//        } else {
-//            lb[i] = w_min;
-//            ub[i] = w_max;
-//        }
-//        for (int j = 0; j < 2 * N; j++) {
-//            H[i * 2 * N + j] = Hesse(i, j);
-//        }
-//    }
-//
-//    int_t nWSR = 800;
-
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> elapsed = end - start;
-    // std::cout << "Problem formulation time taken: " << elapsed.count() << " ms" << std::endl;
-
-//    start = std::chrono::high_resolution_clock::now();
-
-//    QProblem mpc_qp_solver(2 * N, 1);
-//    mpc_qp_solver.setPrintLevel(PL_LOW);
-//    mpc_qp_solver.init(H, g, A, lb, ub, lbA, ubA, nWSR);
-//
-//    real_t x_solution[2 * N];
-//    mpc_qp_solver.getPrimalSolution(x_solution);
-
-//    end = std::chrono::high_resolution_clock::now();
-//    elapsed = end - start;
-//    std::cout << "QPOASE time taken: " << elapsed.count() << " ms" << std::endl;
-
+#ifdef HAVE_QPOASES
     start = std::chrono::high_resolution_clock::now();
+    real_t H[2 * N * 2 * N], g[2 * N], A[2 * N], lb[2 * N], ub[2 * N], lbA[1], ubA[1];
+    lbA[0] = N * (v_min_ + w_min_) / Ku;
+    ubA[0] = N * (v_max_ + w_max_) / Kl;
+    for (int i = 0; i < 2 * N; i++) {
+        g[i] = gradient(i);
+        A[i] = 1;
+        if (i % 2 == 0) {
+            lb[i] = v_min_;
+            ub[i] = v_max_;
+        } else {
+            lb[i] = w_min_;
+            ub[i] = w_max_;
+        }
+        for (int j = 0; j < 2 * N; j++) {
+            H[i * 2 * N + j] = Hesse(i, j);
+        }
+    }
 
+    int_t nWSR = 800;
+
+    // 使用SQProblem替代QProblem，更适合MPC问题
+    static bool first_qp_call = true;
+    // 将求解器定义为静态变量，保持在函数调用之间的状态
+    static SQProblem* mpc_qp_solver = nullptr;
+
+    // 第一次调用时创建求解器实例
+    if (mpc_qp_solver == nullptr || mpc_qp_solver->getNV() != 2*N) {
+        // 如果求解器不存在或问题规模变化，释放旧的并创建新的
+        if (mpc_qp_solver != nullptr) {
+            delete mpc_qp_solver;
+            first_qp_call = true; // 需要重新初始化
+        }
+        mpc_qp_solver = new SQProblem(2 * N, 1);
+
+        // 设置MPC专用选项，对实时控制系统性能非常重要
+        Options options;
+        options.setToMPC();
+        options.printLevel = PL_LOW;
+        mpc_qp_solver->setOptions(options);
+    }
+
+    if (first_qp_call) {
+        // 第一次调用，使用普通init
+        mpc_qp_solver->init(H, g, A, lb, ub, lbA, ubA, nWSR);
+        first_qp_call = false;
+    } else {
+        // 使用SQProblem的hotstart方法，它允许在每次迭代中更新Hessian矩阵(H)和约束矩阵(A)
+        mpc_qp_solver->hotstart(H, g, A, lb, ub, lbA, ubA, nWSR);
+    }
+
+    real_t x_solution[2 * N];
+    mpc_qp_solver->getPrimalSolution(x_solution);
+
+    elapsed = std::chrono::high_resolution_clock::now() - start;
+    std::cout << "qpOASES time taken: " << elapsed.count() << " ms" << std::endl;
+
+    Vector2d u_k;
+    MatrixXd U_result = MatrixXd::Zero(2, N);
+    for (int i = 0; i < N; i++) {
+        u_k(0) = x_solution[2 * i];
+        u_k(1) = x_solution[2 * i + 1];
+        U_result.col(i) = u_k;
+    }
+
+#else
+    start = std::chrono::high_resolution_clock::now();
     // 创建OSQP求解器实例
     OsqpEigen::Solver solver;
 
@@ -174,21 +199,19 @@ MatrixXd MPC::solve(
         std::cout << "Problem failed to solve!" << std::endl;
     }
 
-    end = std::chrono::high_resolution_clock::now();
-    elapsed = end - start;
-    // std::cout << "OSQP Time taken: " << elapsed.count() << " ms" << std::endl;
+    elapsed = std::chrono::high_resolution_clock::now() - start;
+    std::cout << "OSQP Time taken: " << elapsed.count() << " ms" << std::endl;
 
     Vector2d u_k;
     MatrixXd U_result = MatrixXd::Zero(2, N);
     for (int i = 0; i < N; i++) {
-//        u_k(0) = x_solution[2 * i];
-//        u_k(1) = x_solution[2 * i + 1];
         u_k(0) = solution[2 * i];
         u_k(1) = solution[2 * i + 1];
         U_result.col(i) = u_k;
-//        std::cout<<"U "<<i+1<<" : "<<endl<<u_k<<endl;
     }
-    //cout<<"N : "<<N<<endl;
+
+#endif
+
     return U_result;
 }
 

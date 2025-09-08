@@ -4,6 +4,16 @@ project(trajectory_utils)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 查找 qpOASES 库，但不要求必须找到
+find_library(QPOASES_LIBRARY qpOASES)
+# 如果找到库，设置预处理器定义
+if(QPOASES_LIBRARY)
+    message(STATUS "Found qpOASES library: ${QPOASES_LIBRARY}")
+    add_definitions(-DHAVE_QPOASES)
+else()
+    message(STATUS "qpOASES library not found, will use OSQP instead")
+endif()
+
 find_package(catkin REQUIRED COMPONENTS
         roscpp
 )
@@ -64,6 +74,7 @@ target_link_libraries(${PROJECT_NAME}
         Python3::NumPy
         osqp
         OsqpEigen
+        $<$<BOOL:${QPOASES_LIBRARY}>:${QPOASES_LIBRARY}>
 )
 
 add_executable(trajectory_info_test src/test.cpp)
