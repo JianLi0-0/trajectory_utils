@@ -31,7 +31,11 @@ public:
         omega0_ = omega0;
         omega1_v_ = omega1_v;
         omega1_w_ = omega1_w;
+
+        ref_v_max_ = v_max;
     }
+
+    void setRefVMax(double v_max) {ref_v_max_ = v_max;}
 
     void setReferenceSpeedProfileParam(double max_acc, double min_acc) {
         trajectory_info_.setAccLimit(max_acc, min_acc);
@@ -60,6 +64,7 @@ private:
     double w_max_;
     double w_min_;
     double omega0_, omega1_v_, omega1_w_;
+    double ref_v_max_;
 
     const double t_step = 0.03;
     const int N = 20;

@@ -241,7 +241,7 @@ void MPC::generateReferenceTrajectory(const geometry_msgs::PoseStamped& current_
 
     trajectory_info_.calSpeedData(
             0.0, traj_point.v(), traj_point.a(),
-            trajectory_info_.getPathDataPtr()->Length()-save_distance_, v_max_);
+            trajectory_info_.getPathDataPtr()->Length()-save_distance_, ref_v_max_);
 
     trajectory_info_.combinePathAndSpeedProfile();
 
