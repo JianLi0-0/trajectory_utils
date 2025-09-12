@@ -58,7 +58,7 @@ public:
         return trajectory_info_;
     }
 
-private:
+protected:
     double v_max_;
     double v_min_;
     double w_max_;
