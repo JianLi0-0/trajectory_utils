@@ -59,7 +59,6 @@ add_library(${PROJECT_NAME}
         src/math/vec2d.cpp
         src/math/line_segment2d.cpp
         src/mpc.cpp
-        src/mpc_acc.cpp
         src/proto/pnc_point.pb.cc)
 
 target_include_directories(${PROJECT_NAME} PUBLIC
