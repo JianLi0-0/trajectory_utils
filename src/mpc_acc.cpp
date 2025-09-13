@@ -7,7 +7,6 @@
 #include <chrono>
 
 #define PI 3.1415926
-#define MPC_TIME_STEP 0.05
 
 using namespace Eigen;
 using namespace std;
@@ -40,15 +39,26 @@ MatrixXd MPC_ACC::solve(
     for (int i = 0; i < N; i++) {
         Q(4*i, 4*i) = omega0_;      // x
         Q(4*i+1, 4*i+1) = omega0_;  // y
-        Q(4*i+2, 4*i+2) = 0.0;  // theta
-        Q(4*i+3, 4*i+3) = 0.1;     // v (速度权重较小)
+        Q(4*i+2, 4*i+2) = omega0_/10.f;  // theta
+        
+        // 速度权重：根据配置决定是否加大终点权重
+        if (i == N-1) {
+            Q(4*i+3, 4*i+3) = omega0_;  // 终点速度权重增大，促使v_N -> 0
+        } else {
+            Q(4*i+3, 4*i+3) = omega0_;   // 中间步速度权重较小
+        }
     }
     
     MatrixXd R = MatrixXd::Identity(2 * N, 2 * N);
     // 对R矩阵进行间隔赋值 - 加速度控制权重
     for (int i = 0; i < 2 * N; i++) {
         if (i % 2 == 0) {
-            R(i, i) = omega1_v_;  // 线加速度权重
+            // 线加速度权重：终点处加大权重以实现终点加速度为0
+            if (i == 2*(N-1)) {  // 最后一步的加速度
+                R(i, i) = omega1_v_;  // 终点加速度权重增大
+            } else {
+                R(i, i) = omega1_v_;  // 线加速度权重
+            }
         } else {
             R(i, i) = omega1_w_;  // 角速度权重
         }
@@ -79,15 +89,15 @@ MatrixXd MPC_ACC::solve(
         // 角度对时间的偏导（角速度来自控制输入）
         // dtheta/dt = w (w来自控制输入，不是状态变量)
         
-        Vector4d temp_vec = -MPC_TIME_STEP * A_r[k] * Vector4d(X_r[k](0), X_r[k](1), X_r[k](2), X_r[k](3));
+        Vector4d temp_vec = -t_step_acc_ * A_r[k] * Vector4d(X_r[k](0), X_r[k](1), X_r[k](2), X_r[k](3));
         O_r.block<4, 1>(k * 4, 0) = temp_vec;
         
-        A_r[k] = eye_4 + MPC_TIME_STEP * A_r[k];
+        A_r[k] = eye_4 + t_step_acc_ * A_r[k];
         
         // 控制输入矩阵 B - 4x2 矩阵
         // 控制输入是 [a, w]
-        B_r[k](2, 1) = MPC_TIME_STEP;  // dtheta/dw = dt
-        B_r[k](3, 0) = MPC_TIME_STEP;  // dv/da = dt
+        B_r[k](2, 1) = t_step_acc_;  // dtheta/dw = dt
+        B_r[k](3, 0) = t_step_acc_;  // dv/da = dt
         
         // 参考状态 [x, y, theta, v]
         Vector4d x_ref_extended;
@@ -128,12 +138,34 @@ MatrixXd MPC_ACC::solve(
     
     Eigen::SparseMatrix<double> sparse_H(Hesse.sparseView());
     
-    // 约束矩阵 - 对加速度和角速度的约束
-    Eigen::SparseMatrix<double> sparse_A(2 * N, 2 * N);
-    sparse_A.setIdentity();
+    // 构建约束矩阵：包括控制量约束和速度状态约束
+    // 控制量约束：u = [a, w] 
+    // 速度状态约束：v_min <= v_k <= v_max，其中 v_k = v_current + sum(a_i*dt)
     
-    VectorXd lower_bound(2 * N);
-    VectorXd upper_bound(2 * N);
+    double current_v = X_k(3);  // 当前速度
+    
+    // 总约束数量：2*N（控制约束）+ N（速度约束，双边界）= 3*N
+    int total_constraints = 3 * N;
+    Eigen::SparseMatrix<double> sparse_A(total_constraints, 2 * N);
+    
+    // 设置控制量约束（前2*N行）
+    for (int i = 0; i < 2 * N; i++) {
+        sparse_A.insert(i, i) = 1.0;
+    }
+    
+    // 设置速度约束（第2*N到3*N-1行）- 每个时刻一个双边约束
+    for (int k = 0; k < N; k++) {
+        // 速度约束：v_min <= v_k <= v_max
+        // v_k = v_current + sum(a_i*dt) for i = 0 to k
+        for (int i = 0; i <= k; i++) {
+            sparse_A.insert(2*N + k, 2*i) = t_step_acc_;  // 累积加速度影响
+        }
+    }
+    
+    VectorXd lower_bound(total_constraints);
+    VectorXd upper_bound(total_constraints);
+    
+    // 控制量约束
     for (int i = 0; i < 2 * N; i++) {
         if (i % 2 == 0) {
             // 线加速度约束
@@ -146,9 +178,19 @@ MatrixXd MPC_ACC::solve(
         }
     }
     
+    // 速度约束（第2*N到3*N-1行）- 双边界约束
+    for (int k = 0; k < N; k++) {
+        // 对于速度约束：v_min <= v_k <= v_max
+        // v_k = v_current + sum(a_i*dt)
+        // 所以：v_min <= v_current + sum(a_i*dt) <= v_max
+        // 即：v_min - v_current <= sum(a_i*dt) <= v_max - v_current
+        lower_bound(2*N + k) = v_min_ - current_v;  // 下界
+        upper_bound(2*N + k) = v_max_ - current_v;  // 上界
+    }
+    
     // 设置问题数据
     solver.data()->setNumberOfVariables(2*N);
-    solver.data()->setNumberOfConstraints(2*N);
+    solver.data()->setNumberOfConstraints(total_constraints);  // 使用新的约束数量
     if (!solver.data()->setHessianMatrix(sparse_H)) 
         std::cout << "MPC_ACC Problem failed to setHessianMatrix !" << std::endl;
     if (!solver.data()->setGradient(gradient)) 
@@ -325,14 +367,13 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     // 求解得到加速度控制序列 [a, w]
     u_k = solve(X_k, X_r, U_r, N_acc_);
 
+    // 计算MPC预测轨迹
+    calculateMpcTrajectory(X_k, u_k);
+
     // 从加速度积分得到速度
     double dt = t_step_acc_;
     double new_v = current_v_ + u_k.col(0)(0) * dt;  // v = v0 + a*dt
     double new_w = u_k.col(0)(1);                    // 直接使用求解的角速度
-
-    // 速度限制
-    new_v = std::max(0.0, std::min(new_v, v_max_));
-    new_w = std::max(-w_max_, std::min(new_w, w_max_));
 
     // 更新当前速度状态用于下次迭代
     current_v_ = new_v;
@@ -340,8 +381,68 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     // 输出速度命令
     cmd_vel.linear.x = new_v;
     cmd_vel.angular.z = new_w;
+
+    // cmd_vel.angular.x = u_k.col(0)(0); // 用于记录当前参考速度
+    // cmd_vel.angular.y = discretized_trajectory->Evaluate(t_cur).v(); // 用于记录当前参考速度
     
-    std::cout << "MPC_ACC cmd_vel.linear.x: " << new_v << " m/s, acceleration: " << u_k.col(0)(0) << " m/s²" << std::endl;
+    std::cout << "MPC_ACC cmd_vel.linear.x: " << new_v << " m/s, acceleration: " << u_k.col(0)(0) << " m/s²" << "angular vel:" << new_w << std::endl;
 
     return true;
+}
+
+void MPC_ACC::calculateMpcTrajectory(const Eigen::Vector4d& X_k, const Eigen::MatrixXd& u_k) {
+    mpc_traj_.clear();
+    mpc_traj_.reserve(N_acc_ + 1);  // 预留空间：N个预测步 + 当前状态
+
+    // 添加当前状态作为轨迹起点
+    geometry_msgs::PoseStamped current_pose;
+    current_pose.header.frame_id = "map";  // 假设使用map坐标系
+    current_pose.header.stamp = ros::Time::now();
+    current_pose.pose.position.x = X_k(0);
+    current_pose.pose.position.y = X_k(1);
+    current_pose.pose.position.z = 0.0;
+    current_pose.pose.orientation = tf::createQuaternionMsgFromYaw(X_k(2));
+    mpc_traj_.push_back(current_pose);
+
+    // 通过积分控制序列计算预测轨迹
+    Eigen::Vector4d state = X_k;  // 当前状态 [x, y, theta, v]
+
+    for (int i = 0; i < N_acc_; i++) {
+        // 获取当前步的控制量
+        double a_i = u_k(0, i);  // 线加速度
+        double w_i = u_k(1, i);  // 角速度
+
+        // 状态更新：使用运动学模型积分
+        // dx/dt = v*cos(theta)
+        // dy/dt = v*sin(theta)
+        // dtheta/dt = w
+        // dv/dt = a
+
+        double dt = t_step_acc_;
+        double v_current = state(3);
+        double theta_current = state(2);
+
+        // 更新状态
+        state(0) += v_current * cos(theta_current) * dt;  // x
+        state(1) += v_current * sin(theta_current) * dt;  // y
+        state(2) += w_i * dt;                             // theta
+        state(3) += a_i * dt;                             // v
+
+        cout << "MPC_ACC step " << i << ": a=" << a_i << ", w=" << w_i << ", x:" << ", theta=" << state(2) << ", v=" << state(3) << endl;
+
+        // 角度归一化到 [-π, π]
+        while (state(2) > M_PI) state(2) -= 2 * M_PI;
+        while (state(2) < -M_PI) state(2) += 2 * M_PI;
+
+        // 构造轨迹点
+        geometry_msgs::PoseStamped predicted_pose;
+        predicted_pose.header.frame_id = "map";
+        predicted_pose.header.stamp = ros::Time::now() + ros::Duration((i + 1) * dt);
+        predicted_pose.pose.position.x = state(0);
+        predicted_pose.pose.position.y = state(1);
+        predicted_pose.pose.position.z = 0.0;
+        predicted_pose.pose.orientation = tf::createQuaternionMsgFromYaw(state(2));
+
+        mpc_traj_.push_back(predicted_pose);
+    }
 }

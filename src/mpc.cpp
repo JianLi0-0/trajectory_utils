@@ -377,6 +377,10 @@ bool MPC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose, geom
 
     u_k = solve(X_k, X_r, U_r, N);
 
+    // 计算MPC预测轨迹
+    // calculateMpcTrajectory(X_k, u_k);
+    // cmd_vel.linear.z = discretized_trajectory->Evaluate(t_cur).v(); // 用于记录当前参考速度
+
     cmd_vel.linear.x = u_k.col(0)(0);
 
 
@@ -386,4 +390,58 @@ bool MPC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose, geom
     // trajectory_info_.displayUpdate(t_cur+t_step, cmd_vel.linear.x);
 
     return true;
+}
+
+void MPC::calculateMpcTrajectory(const Eigen::Vector3d& X_k, const Eigen::MatrixXd& u_k) {
+    mpc_traj_.clear();
+    mpc_traj_.reserve(N + 1);  // 预留空间：N个预测步 + 当前状态
+
+    // 添加当前状态作为轨迹起点
+    geometry_msgs::PoseStamped current_pose;
+    current_pose.header.frame_id = "map";  // 假设使用map坐标系
+    current_pose.header.stamp = ros::Time::now();
+    current_pose.pose.position.x = X_k(0);
+    current_pose.pose.position.y = X_k(1);
+    current_pose.pose.position.z = 0.0;
+    current_pose.pose.orientation = tf::createQuaternionMsgFromYaw(X_k(2));
+    mpc_traj_.push_back(current_pose);
+
+    // 通过积分控制序列计算预测轨迹
+    Eigen::Vector3d state = X_k;  // 当前状态 [x, y, theta]
+
+    for (int i = 0; i < N; i++) {
+        // 获取当前步的控制量
+        double v_i = u_k(0, i);  // 线速度
+        double w_i = u_k(1, i);  // 角速度
+
+        std::cout << "v_i: " << v_i << std::endl;
+
+        // 状态更新：使用运动学模型积分
+        // dx/dt = v*cos(theta)
+        // dy/dt = v*sin(theta)
+        // dtheta/dt = w
+
+        double dt = t_step;
+        double theta_current = state(2);
+
+        // 更新状态
+        state(0) += v_i * cos(theta_current) * dt;  // x
+        state(1) += v_i * sin(theta_current) * dt;  // y
+        state(2) += w_i * dt;                       // theta
+
+        // 角度归一化到 [-π, π]
+        while (state(2) > M_PI) state(2) -= 2 * M_PI;
+        while (state(2) < -M_PI) state(2) += 2 * M_PI;
+
+        // 构造轨迹点
+        geometry_msgs::PoseStamped predicted_pose;
+        predicted_pose.header.frame_id = "map";
+        predicted_pose.header.stamp = ros::Time::now() + ros::Duration((i + 1) * dt);
+        predicted_pose.pose.position.x = state(0);
+        predicted_pose.pose.position.y = state(1);
+        predicted_pose.pose.position.z = 0.0;
+        predicted_pose.pose.orientation = tf::createQuaternionMsgFromYaw(state(2));
+
+        mpc_traj_.push_back(predicted_pose);
+    }
 }

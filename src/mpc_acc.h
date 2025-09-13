@@ -44,11 +44,21 @@ public:
         current_v_ = v;
     }
 
+    // 获取MPC计算的预测轨迹
+    const std::vector<geometry_msgs::PoseStamped>& getMpcTrajectory() const {
+        return mpc_traj_;
+    }
+
 private:
+    // 计算MPC预测轨迹
+    void calculateMpcTrajectory(const Eigen::Vector4d& X_k, const Eigen::MatrixXd& u_k);
+
     double a_max_;      // 最大线加速度
     double a_min_;      // 最小线加速度
     
     double current_v_;  // 当前线速度
+    
+    std::vector<geometry_msgs::PoseStamped> mpc_traj_;  // MPC计算的预测轨迹
     
     const double t_step_acc_ = 0.05;  // 时间步长
     const int N_acc_ = 20;            // 预测步数

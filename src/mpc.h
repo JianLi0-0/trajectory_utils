@@ -6,6 +6,7 @@
 #include <Eigen/SparseLU>
 #include "ros/ros.h"
 #include "geometry_msgs/Twist.h"
+#include "geometry_msgs/PoseStamped.h"
 #include "tf/tf.h"
 
 #include "trajectory_info.h"
@@ -58,6 +59,15 @@ public:
         return trajectory_info_;
     }
 
+    // 获取MPC计算的预测轨迹
+    const std::vector<geometry_msgs::PoseStamped>& getMpcTrajectory() const {
+        return mpc_traj_;
+    }
+
+private:
+    // 计算MPC预测轨迹
+    void calculateMpcTrajectory(const Eigen::Vector3d& X_k, const Eigen::MatrixXd& u_k);
+
 protected:
     double v_max_;
     double v_min_;
@@ -71,6 +81,8 @@ protected:
     double save_distance_ = 1.2;
     double traj_duration_;
     trajectory_utils::TrajectoryInfo trajectory_info_;
+    
+    std::vector<geometry_msgs::PoseStamped> mpc_traj_;  // MPC计算的预测轨迹
 };
 
 #endif
