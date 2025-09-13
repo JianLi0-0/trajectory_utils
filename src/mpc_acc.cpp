@@ -84,15 +84,15 @@ MatrixXd MPC_ACC::solve(
         // 角度对时间的偏导（角速度来自控制输入）
         // dtheta/dt = w (w来自控制输入，不是状态变量)
         
-        Vector4d temp_vec = -t_step_acc_ * A_r[k] * Vector4d(X_r[k](0), X_r[k](1), X_r[k](2), X_r[k](3));
+        Vector4d temp_vec = -t_step_ * A_r[k] * Vector4d(X_r[k](0), X_r[k](1), X_r[k](2), X_r[k](3));
         O_r.block<4, 1>(k * 4, 0) = temp_vec;
         
-        A_r[k] = eye_4 + t_step_acc_ * A_r[k];
+        A_r[k] = eye_4 + t_step_ * A_r[k];
         
         // 控制输入矩阵 B - 4x2 矩阵
         // 控制输入是 [a, w]
-        B_r[k](2, 1) = t_step_acc_;  // dtheta/dw = dt
-        B_r[k](3, 0) = t_step_acc_;  // dv/da = dt
+        B_r[k](2, 1) = t_step_;  // dtheta/dw = dt
+        B_r[k](3, 0) = t_step_;  // dv/da = dt
         
         // 参考状态 [x, y, theta, v]
         Vector4d x_ref_extended;
@@ -171,7 +171,7 @@ MatrixXd MPC_ACC::solve(
         // 即：v_min <= v_current + sum(a_i*dt) <= v_max
         // 转换为：sum(a_i*dt) 的双边界约束
         for (int i = 0; i <= k; i++) {
-            sparse_A.insert(2*N + k, 2*i) = t_step_acc_;  // 累积加速度影响
+            sparse_A.insert(2*N + k, 2*i) = t_step_;  // 累积加速度影响
         }
     }
     
@@ -180,7 +180,7 @@ MatrixXd MPC_ACC::solve(
         // 新增软约束：v_k <= w_max/|kappa_k| + slack_k
         // 重新排列为：sum(a_i*dt) - slack_k <= w_max/|kappa_k| - v_current
         for (int i = 0; i <= k; i++) {
-            sparse_A.insert(3*N + k, 2*i) = t_step_acc_;  // 累积加速度影响
+            sparse_A.insert(3*N + k, 2*i) = t_step_;  // 累积加速度影响
         }
         sparse_A.insert(3*N + k, 2*N + k) = -1.0;  // 松弛变量系数
     }
@@ -330,9 +330,9 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     double orientation_adjust = 0;
 
     // 构建参考轨迹
-    for (int i = 0; i < N_acc_; i++) {
-        t_k = t_cur + i * t_step_acc_;
-        t_k_1 = t_cur + (i + 1) * t_step_acc_;
+    for (int i = 0; i < horizon_; i++) {
+        t_k = t_cur + i * t_step_;
+        t_k_1 = t_cur + (i + 1) * t_step_;
 
         t_vec.push_back(t_k);
 
@@ -416,13 +416,13 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     X_k(3) = current_v;  // 添加当前速度
 
     // 求解得到加速度控制序列 [a, w]
-    u_k = solve(X_k, X_r, U_r, N_acc_);
+    u_k = solve(X_k, X_r, U_r, horizon_);
 
     // 计算MPC预测轨迹
     calculateMpcTrajectory(X_k, u_k);
 
     // 从加速度积分得到速度
-    double dt = t_step_acc_;
+    double dt = t_step_;
     double new_v = current_v + u_k.col(0)(0) * dt;  // v = v0 + a*dt
     double new_w = u_k.col(0)(1);                    // 直接使用求解的角速度
 
@@ -438,9 +438,44 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     return true;
 }
 
+void MPC_ACC::generateReferenceTrajectory(const geometry_msgs::PoseStamped& current_pose,
+                                 const std::vector<geometry_msgs::PoseStamped>& path, const double& initial_linear_vel) {
+    auto position = current_pose.pose.position;
+    trajectory_utils::TrajectoryPoint traj_point;
+    if (!trajectory_info_.getRefTrajectoryPoint(
+            trajectory_utils::Vec2d(position.x, position.y), traj_point)) {
+        traj_point.set_v(initial_linear_vel);
+        ROS_WARN("traj_point.v(): %f", traj_point.v());
+    }
+
+    std::cout << traj_point.DebugString() << std::endl;
+
+    std::vector<trajectory_utils::PathPoint> path_data;
+    for (auto const& pose_stamped : path) {
+        trajectory_utils::PathPoint p;
+        p.set_x(pose_stamped.pose.position.x);
+        p.set_y(pose_stamped.pose.position.y);
+        path_data.push_back(p);
+    }
+
+    trajectory_info_.setPathData(path_data);
+
+    ROS_WARN("length: %f, save_dist: %f", trajectory_info_.getPathDataPtr()->Length(), save_distance_);
+
+    trajectory_info_.calSpeedData(
+            0.0, traj_point.v(), traj_point.a(),
+            trajectory_info_.getPathDataPtr()->Length()-save_distance_, v_max_);
+
+    trajectory_info_.combinePathAndSpeedProfile();
+
+    // trajectory_info_.displayTrajProfile();
+
+    traj_duration_ = trajectory_info_.getSpeedDataPtr()->get_duration();
+}
+
 void MPC_ACC::calculateMpcTrajectory(const Eigen::Vector4d& X_k, const Eigen::MatrixXd& u_k) {
     mpc_traj_.clear();
-    mpc_traj_.reserve(N_acc_ + 1);  // 预留空间：N个预测步 + 当前状态
+    mpc_traj_.reserve(horizon_ + 1);  // 预留空间：N个预测步 + 当前状态
 
     // 添加当前状态作为轨迹起点
     geometry_msgs::PoseStamped current_pose;
@@ -455,7 +490,7 @@ void MPC_ACC::calculateMpcTrajectory(const Eigen::Vector4d& X_k, const Eigen::Ma
     // 通过积分控制序列计算预测轨迹
     Eigen::Vector4d state = X_k;  // 当前状态 [x, y, theta, v]
 
-    for (int i = 0; i < N_acc_; i++) {
+    for (int i = 0; i < horizon_; i++) {
         // 获取当前步的控制量
         double a_i = u_k(0, i);  // 线加速度
         double w_i = u_k(1, i);  // 角速度
@@ -466,7 +501,7 @@ void MPC_ACC::calculateMpcTrajectory(const Eigen::Vector4d& X_k, const Eigen::Ma
         // dtheta/dt = w
         // dv/dt = a
 
-        double dt = t_step_acc_;
+        double dt = t_step_;
         double v_current = state(3);
         double theta_current = state(2);
 
