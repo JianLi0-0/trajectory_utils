@@ -1,6 +1,7 @@
 #include "mpc_acc.h"
 #include "math.h"
 #include "iostream"
+#include <algorithm>
 #include <Eigen/Dense>
 #include <OsqpEigen/OsqpEigen.h>
 #include <ros/ros.h>
@@ -39,14 +40,8 @@ MatrixXd MPC_ACC::solve(
     for (int i = 0; i < N; i++) {
         Q(4*i, 4*i) = omega0_;      // x
         Q(4*i+1, 4*i+1) = omega0_;  // y
-        Q(4*i+2, 4*i+2) = omega0_/10.f;  // theta
-        
-        // 速度权重：根据配置决定是否加大终点权重
-        if (i == N-1) {
-            Q(4*i+3, 4*i+3) = omega0_;  // 终点速度权重增大，促使v_N -> 0
-        } else {
-            Q(4*i+3, 4*i+3) = omega0_;   // 中间步速度权重较小
-        }
+        Q(4*i+2, 4*i+2) = omega0_/200.f;  // theta
+        Q(4*i+3, 4*i+3) = omega0_;
     }
     
     MatrixXd R = MatrixXd::Identity(2 * N, 2 * N);
@@ -121,8 +116,25 @@ MatrixXd MPC_ACC::solve(
 
     // 当前状态已经是4维 [x, y, theta, v]
     MatrixXd E = A_bar * X_k + C_bar * O_r - X_ref;
-    MatrixXd Hesse = 2 * (B_bar.transpose() * Q * B_bar + R);
-    VectorXd gradient = 2 * B_bar.transpose() * Q * E;
+    
+    // 添加松弛变量：优化变量从 [a_0, w_0, ..., a_{N-1}, w_{N-1}] 
+    // 扩展为 [a_0, w_0, ..., a_{N-1}, w_{N-1}, slack_0, slack_1, ..., slack_{N-1}]
+    // 总变量数：2*N（控制变量）+ N（松弛变量）= 3*N
+    int total_variables = 3 * N;
+    
+    // 扩展Hessian矩阵和梯度向量
+    MatrixXd Hesse_original = 2 * (B_bar.transpose() * Q * B_bar + R);
+    MatrixXd Hesse_expanded = MatrixXd::Zero(total_variables, total_variables);
+    Hesse_expanded.block(0, 0, 2*N, 2*N) = Hesse_original;
+    // 松弛变量的权重（对角线）
+    for (int i = 0; i < N; i++) {
+        Hesse_expanded(2*N + i, 2*N + i) = 2 * 1000.0;  // 松弛变量权重为10.0
+    }
+    
+    VectorXd gradient_original = 2 * B_bar.transpose() * Q * E;
+    VectorXd gradient_expanded = VectorXd::Zero(total_variables);
+    gradient_expanded.head(2*N) = gradient_original;
+    // 松弛变量的梯度为0
 
     std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - start;
     std::cout << "MPC_ACC Problem formulation time taken: " << elapsed.count() << " ms" << std::endl;
@@ -136,36 +148,52 @@ MatrixXd MPC_ACC::solve(
     solver.settings()->setVerbosity(false);
     solver.settings()->setWarmStart(true);
     
-    Eigen::SparseMatrix<double> sparse_H(Hesse.sparseView());
+    Eigen::SparseMatrix<double> sparse_H(Hesse_expanded.sparseView());
     
-    // 构建约束矩阵：包括控制量约束和速度状态约束
-    // 控制量约束：u = [a, w] 
-    // 速度状态约束：v_min <= v_k <= v_max，其中 v_k = v_current + sum(a_i*dt)
+    // 构建约束矩阵：保持原有约束 + 添加基于角速度的软约束 + 松弛变量非负约束
+    // 原有约束：控制量约束 + 速度硬约束（双边界）
+    // 新增约束：基于角速度的软约束 + 松弛变量非负约束
     
     double current_v = X_k(3);  // 当前速度
     
-    // 总约束数量：2*N（控制约束）+ N（速度约束，双边界）= 3*N
-    int total_constraints = 3 * N;
-    Eigen::SparseMatrix<double> sparse_A(total_constraints, 2 * N);
+    // 总约束数量：2*N（控制约束）+ N（速度双边界硬约束）+ N（角速度软约束）+ N（松弛变量非负）= 5*N
+    int total_constraints = 5 * N;
+    Eigen::SparseMatrix<double> sparse_A(total_constraints, total_variables);
     
-    // 设置控制量约束（前2*N行）
+    // 设置控制量约束（第0到2*N-1行）
     for (int i = 0; i < 2 * N; i++) {
         sparse_A.insert(i, i) = 1.0;
     }
     
-    // 设置速度约束（第2*N到3*N-1行）- 每个时刻一个双边约束
+    // 设置速度硬约束（第2*N到3*N-1行）- 双边界约束
     for (int k = 0; k < N; k++) {
-        // 速度约束：v_min <= v_k <= v_max
-        // v_k = v_current + sum(a_i*dt) for i = 0 to k
+        // 原有硬约束：v_min <= v_k <= v_max
+        // 即：v_min <= v_current + sum(a_i*dt) <= v_max
+        // 转换为：sum(a_i*dt) 的双边界约束
         for (int i = 0; i <= k; i++) {
             sparse_A.insert(2*N + k, 2*i) = t_step_acc_;  // 累积加速度影响
         }
     }
     
+    // 设置基于角速度的软约束（第3*N到4*N-1行）
+    for (int k = 0; k < N; k++) {
+        // 新增软约束：v_k <= w_max/|kappa_k| + slack_k
+        // 重新排列为：sum(a_i*dt) - slack_k <= w_max/|kappa_k| - v_current
+        for (int i = 0; i <= k; i++) {
+            sparse_A.insert(3*N + k, 2*i) = t_step_acc_;  // 累积加速度影响
+        }
+        sparse_A.insert(3*N + k, 2*N + k) = -1.0;  // 松弛变量系数
+    }
+    
+    // 设置松弛变量非负约束（第4*N到5*N-1行）
+    for (int k = 0; k < N; k++) {
+        sparse_A.insert(4*N + k, 2*N + k) = 1.0;  // slack_k >= 0
+    }
+    
     VectorXd lower_bound(total_constraints);
     VectorXd upper_bound(total_constraints);
     
-    // 控制量约束
+    // 控制量约束（第0到2*N-1行）
     for (int i = 0; i < 2 * N; i++) {
         if (i % 2 == 0) {
             // 线加速度约束
@@ -178,7 +206,7 @@ MatrixXd MPC_ACC::solve(
         }
     }
     
-    // 速度约束（第2*N到3*N-1行）- 双边界约束
+    // 速度硬约束（第2*N到3*N-1行）- 双边界约束
     for (int k = 0; k < N; k++) {
         // 对于速度约束：v_min <= v_k <= v_max
         // v_k = v_current + sum(a_i*dt)
@@ -188,12 +216,30 @@ MatrixXd MPC_ACC::solve(
         upper_bound(2*N + k) = v_max_ - current_v;  // 上界
     }
     
+    // 基于角速度的软约束（第3*N到4*N-1行）
+    for (int k = 0; k < N; k++) {
+        // 软约束：sum(a_i*dt) - slack_k <= w_max/|kappa_k| - v_current
+        double v_max_from_w = std::numeric_limits<double>::infinity();  // 默认无限制
+        if (std::abs(kappa_ref_vec_[k]) > 1e-6) {
+            v_max_from_w = 0.9*w_max_ / std::abs(kappa_ref_vec_[k]);
+        }
+        
+        lower_bound(3*N + k) = -std::numeric_limits<double>::infinity();
+        upper_bound(3*N + k) = v_max_from_w - current_v;
+    }
+    
+    // 松弛变量非负约束（第4*N到5*N-1行）
+    for (int k = 0; k < N; k++) {
+        lower_bound(4*N + k) = 0.0;  // slack_k >= 0
+        upper_bound(4*N + k) = std::numeric_limits<double>::infinity();
+    }
+    
     // 设置问题数据
-    solver.data()->setNumberOfVariables(2*N);
+    solver.data()->setNumberOfVariables(total_variables);  // 使用3*N个变量（包含松弛变量）
     solver.data()->setNumberOfConstraints(total_constraints);  // 使用新的约束数量
     if (!solver.data()->setHessianMatrix(sparse_H)) 
         std::cout << "MPC_ACC Problem failed to setHessianMatrix !" << std::endl;
-    if (!solver.data()->setGradient(gradient)) 
+    if (!solver.data()->setGradient(gradient_expanded))  // 使用扩展梯度
         std::cout << "MPC_ACC Problem failed to setGradient !" << std::endl;
     if (!solver.data()->setLinearConstraintsMatrix(sparse_A)) 
         std::cout << "MPC_ACC Problem failed to setLinearConstraintsMatrix !" << std::endl;
@@ -210,10 +256,15 @@ MatrixXd MPC_ACC::solve(
     // 执行求解
     if (solver.solveProblem() == OsqpEigen::ErrorExitFlag::NoError) {
         solution = solver.getSolution();
+        // 检查解的维度是否正确
+        if (solution.size() != total_variables) {
+            std::cout << "MPC_ACC Warning: solution size " << solution.size() 
+                      << " does not match expected " << total_variables << std::endl;
+        }
     } else {
         std::cout << "MPC_ACC Problem failed to solve!" << std::endl;
-        // 返回零控制输入
-        solution = VectorXd::Zero(2 * N);
+        // 返回零控制输入（包含松弛变量）
+        solution = VectorXd::Zero(total_variables);
     }
     
     elapsed = std::chrono::high_resolution_clock::now() - start;
@@ -232,9 +283,10 @@ MatrixXd MPC_ACC::solve(
 }
 
 bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose, 
-                                geometry_msgs::Twist& cmd_vel) {
+                                geometry_msgs::Twist& cmd_vel, const double& current_v) {
     std::vector<Eigen::Vector4d> X_r;  // 改为4维状态向量
     std::vector<Eigen::Vector2d> U_r;
+    kappa_ref_vec_.clear();
     Eigen::MatrixXd u_k;
     Eigen::Vector3d pos_r, pos_r_1, pos_final, v_r_1, v_r_2;
     Eigen::Vector4d X_k;  // 直接定义为4维状态向量
@@ -264,14 +316,13 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     double remain_s = end_point.path_point().s() - traj_point.path_point().s();
 
     if (remain_s < 0.06) {
-        current_v_ = 0.0;
         ROS_WARN("MPC_ACC remain_s < 0.06");
         cout << "traj_point: " << traj_point.DebugString() << std::endl;
         cout << "end_point: " << end_point.DebugString() << std::endl;
         return false;
     }
 
-    std::vector<double> t_vec, x_ref_vec, y_ref_vec, theta_ref_vec, s_ref_vec, v_ref_vec, w_ref_vec, a_ref_vec, kappa_ref_vec;
+    std::vector<double> t_vec, x_ref_vec, y_ref_vec, theta_ref_vec, s_ref_vec, v_ref_vec, w_ref_vec, a_ref_vec;
 
     bool is_orientation_adjust = false;
     bool first_flag = true;
@@ -340,7 +391,7 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
 
         w = pos_r_raw.v() * pos_r_raw.path_point().kappa();
         w_ref_vec.push_back(w);
-        kappa_ref_vec.push_back(pos_r_raw.path_point().kappa());
+        kappa_ref_vec_.push_back(pos_r_raw.path_point().kappa());
 
         u_r(0) = pos_r_raw.a();  // 参考线加速度
         u_r(1) = w;           // 参考角速度
@@ -362,7 +413,7 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     } else {
         X_k(2) = yaw;
     }
-    X_k(3) = current_v_;  // 添加当前速度
+    X_k(3) = current_v;  // 添加当前速度
 
     // 求解得到加速度控制序列 [a, w]
     u_k = solve(X_k, X_r, U_r, N_acc_);
@@ -372,11 +423,8 @@ bool MPC_ACC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
 
     // 从加速度积分得到速度
     double dt = t_step_acc_;
-    double new_v = current_v_ + u_k.col(0)(0) * dt;  // v = v0 + a*dt
+    double new_v = current_v + u_k.col(0)(0) * dt;  // v = v0 + a*dt
     double new_w = u_k.col(0)(1);                    // 直接使用求解的角速度
-
-    // 更新当前速度状态用于下次迭代
-    current_v_ = new_v;
 
     // 输出速度命令
     cmd_vel.linear.x = new_v;
