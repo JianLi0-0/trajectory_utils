@@ -6,6 +6,10 @@
 #include <ros/ros.h>
 #include <chrono>
 
+#ifdef HAVE_QPOASES
+#include <qpOASES.hpp>
+#endif
+
 #define PI 3.1415926
 
 using namespace Eigen;
@@ -129,20 +133,6 @@ MatrixXd MPC::solve(
     gradient_expanded.head(2*N) = gradient_original;
     // 松弛变量的梯度为0
 
-    std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - start;
-    std::cout << "MPC Problem formulation time taken: " << elapsed.count() << " ms" << std::endl;
-
-    start = std::chrono::high_resolution_clock::now();
-    
-    // 使用OSQP求解器
-    OsqpEigen::Solver solver;
-    
-    // 设置求解器参数
-    solver.settings()->setVerbosity(false);
-    solver.settings()->setWarmStart(true);
-    
-    Eigen::SparseMatrix<double> sparse_H(Hesse_expanded.sparseView());
-    
     // 构建约束矩阵：保持原有约束 + 添加基于角速度的软约束 + 松弛变量非负约束
     // 原有约束：控制量约束 + 速度硬约束（双边界）
     // 新增约束：基于角速度的软约束 + 松弛变量非负约束
@@ -226,6 +216,125 @@ MatrixXd MPC::solve(
         lower_bound(4*N + k) = 0.0;  // slack_k >= 0
         upper_bound(4*N + k) = std::numeric_limits<double>::infinity();
     }
+
+    std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - start;
+    std::cout << "MPC Problem formulation time taken: " << elapsed.count() << " ms" << std::endl;
+    start = std::chrono::high_resolution_clock::now();
+    
+    Eigen::VectorXd solution;
+    
+#ifdef HAVE_QPOASES
+    // 使用qpOASES求解器
+    std::cout << "Using qpOASES solver for MPC" << std::endl;
+    
+    // qpOASES使用row-major格式，需要转换矩阵
+    // 问题格式：min 0.5*x'*H*x + g'*x
+    // 约束：lbA <= A*x <= ubA, lb <= x <= ub
+    
+    int nV = total_variables;  // 变量数
+    int nC = total_constraints;  // 约束数
+    
+    // 转换Hessian矩阵到qpOASES格式（row-major）
+    qpOASES::real_t* H = new qpOASES::real_t[nV * nV];
+    for (int i = 0; i < nV; i++) {
+        for (int j = 0; j < nV; j++) {
+            H[i * nV + j] = Hesse_expanded(i, j);
+        }
+    }
+    
+    // 梯度向量
+    qpOASES::real_t* g = new qpOASES::real_t[nV];
+    for (int i = 0; i < nV; i++) {
+        g[i] = gradient_expanded(i);
+    }
+    
+    // 约束矩阵A（row-major）
+    qpOASES::real_t* A = new qpOASES::real_t[nC * nV];
+    for (int i = 0; i < nC; i++) {
+        for (int j = 0; j < nV; j++) {
+            A[i * nV + j] = sparse_A.coeff(i, j);
+        }
+    }
+    
+    // 约束边界
+    qpOASES::real_t* lbA = new qpOASES::real_t[nC];
+    qpOASES::real_t* ubA = new qpOASES::real_t[nC];
+    qpOASES::real_t* lb = new qpOASES::real_t[nV];
+    qpOASES::real_t* ub = new qpOASES::real_t[nV];
+    
+    for (int i = 0; i < nC; i++) {
+        lbA[i] = lower_bound(i);
+        ubA[i] = upper_bound(i);
+    }
+    
+    // 变量边界（无约束）
+    for (int i = 0; i < nV; i++) {
+        lb[i] = -1e20;  // 负无穷
+        ub[i] = 1e20;   // 正无穷
+    }
+    
+    // 创建静态QProblem对象以支持hotstart
+    static qpOASES::SQProblem qp_problem(nV, nC);
+    static bool qp_initialized = false;
+    
+    // 设置求解器选项
+    qpOASES::Options options;
+    options.setToMPC();  // 设置为MPC问题
+    options.printLevel = qpOASES::PL_NONE;  // 不输出日志
+    qp_problem.setOptions(options);
+    
+    int nWSR = 800;  // 最大工作集改变次数
+    qpOASES::returnValue ret;
+    if (!qp_initialized) {
+        // 首次调用使用init
+        ret = qp_problem.init(H, g, A, lb, ub, lbA, ubA, nWSR);
+        qp_initialized = (ret == qpOASES::SUCCESSFUL_RETURN);
+    } else {
+        // 后续调用使用hotstart
+        ret = qp_problem.hotstart(H, g, A, lb, ub, lbA, ubA, nWSR);
+    }
+    
+    if (ret == qpOASES::SUCCESSFUL_RETURN) {
+        qpOASES::real_t* x_opt = new qpOASES::real_t[nV];
+        qp_problem.getPrimalSolution(x_opt);
+        
+        solution = VectorXd::Zero(total_variables);
+        for (int i = 0; i < nV; i++) {
+            solution(i) = x_opt[i];
+        }
+        
+        delete[] x_opt;
+        std::cout << "qpOASES solved successfully" << std::endl;
+    } else {
+        std::cout << "qpOASES failed to solve! Error code: " << ret << std::endl;
+        solution = VectorXd::Zero(total_variables);
+        qp_initialized = false; // 若失败则下次重新init
+    }
+    
+    // 清理内存
+    delete[] H;
+    delete[] g;
+    delete[] A;
+    delete[] lbA;
+    delete[] ubA;
+    delete[] lb;
+    delete[] ub;
+
+    elapsed = std::chrono::high_resolution_clock::now() - start;
+    std::cout << "qpOASES takes: " << elapsed.count() << " ms" << std::endl;
+    start = std::chrono::high_resolution_clock::now();
+
+#else
+    // 使用OSQP求解器
+    std::cout << "Using OSQP solver for MPC" << std::endl;
+    
+    OsqpEigen::Solver solver;
+    
+    // 设置求解器参数
+    solver.settings()->setVerbosity(false);
+    solver.settings()->setWarmStart(true);
+    
+    Eigen::SparseMatrix<double> sparse_H(Hesse_expanded.sparseView());
     
     // 设置问题数据
     solver.data()->setNumberOfVariables(total_variables);  // 使用3*N个变量（包含松弛变量）
@@ -245,7 +354,6 @@ MatrixXd MPC::solve(
     if (!solver.initSolver()) 
         cout << "MPC Problem failed to initSolver !" << std::endl;
     
-    Eigen::VectorXd solution;
     // 执行求解
     if (solver.solveProblem() == OsqpEigen::ErrorExitFlag::NoError) {
         solution = solver.getSolution();
@@ -259,9 +367,11 @@ MatrixXd MPC::solve(
         // 返回零控制输入（包含松弛变量）
         solution = VectorXd::Zero(total_variables);
     }
-    
+
     elapsed = std::chrono::high_resolution_clock::now() - start;
-    std::cout << "MPC OSQP Time taken: " << elapsed.count() << " ms" << std::endl;
+    std::cout << "OSQP time taken: " << elapsed.count() << " ms" << std::endl;
+
+#endif
     
     // 构建结果矩阵 [a, w]
     Vector2d u_k;
@@ -503,7 +613,7 @@ void MPC::calculateMpcTrajectory(const Eigen::Vector4d& X_k, const Eigen::Matrix
         state(2) += w_i * dt;                             // theta
         state(3) += a_i * dt;                             // v
 
-        cout << "MPC step " << i << ": a=" << a_i << ", w=" << w_i << ", x:" << ", theta=" << state(2) << ", v=" << state(3) << endl;
+        // cout << "MPC step " << i << ": a=" << a_i << ", w=" << w_i << ", x:" << ", theta=" << state(2) << ", v=" << state(3) << endl;
 
         // 角度归一化到 [-π, π]
         while (state(2) > M_PI) state(2) -= 2 * M_PI;
