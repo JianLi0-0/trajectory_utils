@@ -37,6 +37,11 @@ public:
         a_min_ = a_min;
     }
 
+    void setTimeStepAndHorizon(const double& time_step, const int& horizon) {
+        t_step_ = time_step;
+        horizon_ = horizon;
+    }
+
     void setReferenceSpeedProfileParam(double max_acc, double min_acc) {
         trajectory_info_.setAccLimit(max_acc, min_acc);
     }
@@ -76,8 +81,8 @@ private:
     double w_min_;
     double omega0_, omega1_v_, omega1_w_;
 
-    const double t_step_ = 0.05;  // 时间步长
-    const int horizon_ = 10;            // 预测步数
+    double t_step_ = 0.05;  // 时间步长
+    int horizon_ = 10;            // 预测步数
     double save_distance_ = 1.2;
     double traj_duration_;
     trajectory_utils::TrajectoryInfo trajectory_info_;
