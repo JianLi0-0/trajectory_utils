@@ -194,27 +194,24 @@ MatrixXd MPC::solve(
             upper_bound(i) = a_max_;
         } else {
             // 角速度约束
-            lower_bound(i) = -w_max_;
+            lower_bound(i) = w_min_;
             upper_bound(i) = w_max_;
         }
     }
     
     // 速度硬约束（第2*N到3*N-1行）- 双边界约束
     for (int k = 0; k < N; k++) {
-        // 对于速度约束：v_min <= v_k <= v_max
-        // v_k = v_current + sum(a_i*dt)
-        // 所以：v_min <= v_current + sum(a_i*dt) <= v_max
-        // 即：v_min - v_current <= sum(a_i*dt) <= v_max - v_current
         lower_bound(2*N + k) = v_min_ - current_v;  // 下界
-        upper_bound(2*N + k) = v_max_ - current_v;  // 上界
+        upper_bound(2*N + k) = std::numeric_limits<double>::infinity();  // 上界
     }
     
     // 基于角速度的软约束（第3*N到4*N-1行）
     for (int k = 0; k < N; k++) {
         // 软约束：sum(a_i*dt) - slack_k <= w_max/|kappa_k| - v_current
-        double v_max_from_w = std::numeric_limits<double>::infinity();  // 默认无限制
+        double v_max_from_w = v_max_;
         if (std::abs(kappa_ref_vec_[k]) > 1e-6) {
-            v_max_from_w = 0.9*w_max_ / std::abs(kappa_ref_vec_[k]);
+            v_max_from_w = 0.8*w_max_ / std::abs(kappa_ref_vec_[k]);
+            v_max_from_w = std::min(v_max_from_w, v_max_);  // 不超过全局最大速度
         }
         
         lower_bound(3*N + k) = -std::numeric_limits<double>::infinity();

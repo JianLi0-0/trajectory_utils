@@ -25,7 +25,7 @@ public:
 
     // 初始化方法，添加加速度约束
     void init(double v_max, double w_max, double omega0, double omega1_v, double omega1_w,
-              double a_max = 2.0) {
+              double a_max = 2.0, double a_min = -3.0) {
         v_max_ = v_max;
         v_min_ = 0.0;
         w_max_ = w_max;
@@ -34,7 +34,7 @@ public:
         omega1_v_ = omega1_v;
         omega1_w_ = omega1_w;
         a_max_ = a_max;
-        a_min_ = -a_max;
+        a_min_ = a_min;
     }
 
     void setReferenceSpeedProfileParam(double max_acc, double min_acc) {
