@@ -130,7 +130,7 @@ MatrixXd MPC::solve(
     // 松弛变量的梯度为0
 
     std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - start;
-    std::cout << "MPC Problem formulation time taken: " << elapsed.count() << " ms" << std::endl;
+    ROS_INFO("MPC Problem formulation time taken: %f ms", elapsed.count());
 
     start = std::chrono::high_resolution_clock::now();
     
@@ -228,38 +228,41 @@ MatrixXd MPC::solve(
     solver.data()->setNumberOfVariables(total_variables);  // 使用3*N个变量（包含松弛变量）
     solver.data()->setNumberOfConstraints(total_constraints);  // 使用新的约束数量
     if (!solver.data()->setHessianMatrix(sparse_H)) 
-        std::cout << "MPC Problem failed to setHessianMatrix !" << std::endl;
+        ROS_ERROR("MPC Problem failed to setHessianMatrix !");
     if (!solver.data()->setGradient(gradient_expanded))  // 使用扩展梯度
-        std::cout << "MPC Problem failed to setGradient !" << std::endl;
-    if (!solver.data()->setLinearConstraintsMatrix(sparse_A)) 
-        std::cout << "MPC Problem failed to setLinearConstraintsMatrix !" << std::endl;
-    if (!solver.data()->setLowerBound(lower_bound)) 
-        std::cout << "MPC Problem failed to setLowerBound !" << std::endl;
-    if (!solver.data()->setUpperBound(upper_bound)) 
-        std::cout << "MPC Problem failed to setUpperBound !" << std::endl;
-    
+        ROS_ERROR("MPC Problem failed to setGradient !");
+    if (!solver.data()->setLinearConstraintsMatrix(sparse_A))
+        ROS_ERROR("MPC Problem failed to setLinearConstraintsMatrix !");
+    if (!solver.data()->setLowerBound(lower_bound))
+        ROS_ERROR("MPC Problem failed to setLowerBound !");
+    if (!solver.data()->setUpperBound(upper_bound))
+        ROS_ERROR("MPC Problem failed to setUpperBound !");
+
     // 初始化求解器
     if (!solver.initSolver()) 
-        cout << "MPC Problem failed to initSolver !" << std::endl;
-    
+        ROS_ERROR("MPC Problem failed to initSolver !");
+
     Eigen::VectorXd solution;
     // 执行求解
     if (solver.solveProblem() == OsqpEigen::ErrorExitFlag::NoError) {
         solution = solver.getSolution();
         // 检查解的维度是否正确
         if (solution.size() != total_variables) {
-            std::cout << "MPC Warning: solution size " << solution.size()
-                      << " does not match expected " << total_variables << std::endl;
+            ROS_WARN("MPC Warning: solution size %ld does not match expected %d", solution.size(), total_variables);
+        }
+        // 检查是否达到最大迭代次数
+        if (solver.getStatus() == OsqpEigen::Status::MaxIterReached) {
+            ROS_WARN("MPC Warning: OSQP reached max iterations, solution may not be optimal!");
         }
     } else {
-        std::cout << "MPC Problem failed to solve!" << std::endl;
+        ROS_ERROR("MPC Problem failed to solve!");
         // 返回零控制输入（包含松弛变量）
         solution = VectorXd::Zero(total_variables);
     }
     
     elapsed = std::chrono::high_resolution_clock::now() - start;
-    std::cout << "MPC OSQP Time taken: " << elapsed.count() << " ms" << std::endl;
-    
+    ROS_INFO("MPC OSQP Time taken: %f ms", elapsed.count());
+
     // 构建结果矩阵 [a, w]
     Vector2d u_k;
     MatrixXd U_result = MatrixXd::Zero(2, N);
@@ -297,7 +300,7 @@ bool MPC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
             trajectory_utils::Vec2d(current_pose.pose.position.x, current_pose.pose.position.y), traj_point);
     double t_cur = traj_point.relative_time();
 
-    std::cout << "MPC t_cur: " << t_cur << ",  traj_duration: " << traj_duration_ << std::endl;
+    ROS_INFO("MPC t_cur: %f,  traj_duration: %f", t_cur, traj_duration_);
 
     auto end_point = discretized_trajectory->Evaluate(traj_duration_);
     pos_final << end_point.path_point().x(), end_point.path_point().y(), 0.0;
@@ -422,7 +425,7 @@ bool MPC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     // cmd_vel.angular.x = u_k.col(0)(0); // 用于记录当前参考速度
     // cmd_vel.angular.y = discretized_trajectory->Evaluate(t_cur).v(); // 用于记录当前参考速度
     
-    std::cout << "MPC cmd_vel.linear.x: " << new_v << " m/s, acceleration: " << u_k.col(0)(0) << " m/s²" << "angular vel:" << new_w << std::endl;
+    ROS_INFO("MPC cmd_vel.linear.x: %f m/s, acceleration: %f m/s², angular vel: %f", new_v, u_k.col(0)(0), new_w);
 
     return true;
 }
@@ -499,8 +502,6 @@ void MPC::calculateMpcTrajectory(const Eigen::Vector4d& X_k, const Eigen::Matrix
         state(1) += v_current * sin(theta_current) * dt;  // y
         state(2) += w_i * dt;                             // theta
         state(3) += a_i * dt;                             // v
-
-        cout << "MPC step " << i << ": a=" << a_i << ", w=" << w_i << ", x:" << ", theta=" << state(2) << ", v=" << state(3) << endl;
 
         // 角度归一化到 [-π, π]
         while (state(2) > M_PI) state(2) -= 2 * M_PI;
