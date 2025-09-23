@@ -142,15 +142,12 @@ MatrixXd MPC::solve(
     solver.settings()->setWarmStart(true);
     
     Eigen::SparseMatrix<double> sparse_H(Hesse_expanded.sparseView());
-    
-    // 构建约束矩阵：保持原有约束 + 添加基于角速度的软约束 + 松弛变量非负约束
-    // 原有约束：控制量约束 + 速度硬约束（双边界）
-    // 新增约束：基于角速度的软约束 + 松弛变量非负约束
+
     
     double current_v = X_k(3);  // 当前速度
     
-    // 总约束数量：2*N（控制约束）+ N（速度双边界硬约束）+ N（角速度软约束）+ N（松弛变量非负）= 5*N
-    int total_constraints = 5 * N;
+    // 总约束数量：2*N（控制约束）+ N（速度下界硬约束+基于角速度的软上界）+ N（松弛变量非负）= 4*N
+    int total_constraints = 4 * N;
     Eigen::SparseMatrix<double> sparse_A(total_constraints, total_variables);
     
     // 设置控制量约束（第0到2*N-1行）
@@ -158,29 +155,22 @@ MatrixXd MPC::solve(
         sparse_A.insert(i, i) = 1.0;
     }
     
-    // 设置速度硬约束（第2*N到3*N-1行）- 双边界约束
+    // 合并速度约束（硬下界 + 基于角速度的软上界）（第2*N到3*N-1行）
     for (int k = 0; k < N; k++) {
-        // 原有硬约束：v_min <= v_k <= v_max
-        // 即：v_min <= v_current + sum(a_i*dt) <= v_max
-        // 转换为：sum(a_i*dt) 的双边界约束
+        // 约束表达式: v_min <= v_k <= w_max/|kappa_k| + slack_k
+        // 转换为: v_min - v_current <= sum(a_i*dt) <= w_max/|kappa_k| - v_current + slack_k
+        // OSQP形式:
+        // 下界: v_min - v_current <= sum(a_i*dt)
+        // 上界: sum(a_i*dt) - slack_k <= w_max/|kappa_k| - v_current
         for (int i = 0; i <= k; i++) {
             sparse_A.insert(2*N + k, 2*i) = t_step_;  // 累积加速度影响
         }
+        sparse_A.insert(2*N + k, 2*N + k) = 1.0;  // 松弛变量系数，用于上界
     }
     
-    // 设置基于角速度的软约束（第3*N到4*N-1行）
+    // 设置松弛变量非负约束（第3*N到4*N-1行）
     for (int k = 0; k < N; k++) {
-        // 新增软约束：v_k <= w_max/|kappa_k| + slack_k
-        // 重新排列为：sum(a_i*dt) - slack_k <= w_max/|kappa_k| - v_current
-        for (int i = 0; i <= k; i++) {
-            sparse_A.insert(3*N + k, 2*i) = t_step_;  // 累积加速度影响
-        }
-        sparse_A.insert(3*N + k, 2*N + k) = -1.0;  // 松弛变量系数
-    }
-    
-    // 设置松弛变量非负约束（第4*N到5*N-1行）
-    for (int k = 0; k < N; k++) {
-        sparse_A.insert(4*N + k, 2*N + k) = 1.0;  // slack_k >= 0
+        sparse_A.insert(3*N + k, 2*N + k) = 1.0;  // slack_k >= 0
     }
     
     VectorXd lower_bound(total_constraints);
@@ -199,29 +189,24 @@ MatrixXd MPC::solve(
         }
     }
     
-    // 速度硬约束（第2*N到3*N-1行）- 双边界约束
+    // 合并后的速度约束界限（第2*N到3*N-1行）
     for (int k = 0; k < N; k++) {
-        lower_bound(2*N + k) = v_min_ - current_v;  // 下界
-        upper_bound(2*N + k) = std::numeric_limits<double>::infinity();  // 上界
-    }
-    
-    // 基于角速度的软约束（第3*N到4*N-1行）
-    for (int k = 0; k < N; k++) {
-        // 软约束：sum(a_i*dt) - slack_k <= w_max/|kappa_k| - v_current
+        // 下界
+        lower_bound(2*N + k) = v_min_ - current_v;
+
+        // 上界
         double v_max_from_w = v_max_;
         if (std::abs(kappa_ref_vec_[k]) > 1e-6) {
             v_max_from_w = 0.8*w_max_ / std::abs(kappa_ref_vec_[k]);
             v_max_from_w = std::min(v_max_from_w, v_max_);  // 不超过全局最大速度
         }
-        
-        lower_bound(3*N + k) = -std::numeric_limits<double>::infinity();
-        upper_bound(3*N + k) = v_max_from_w - current_v;
+        upper_bound(2*N + k) = v_max_from_w - current_v;
     }
     
-    // 松弛变量非负约束（第4*N到5*N-1行）
+    // 松弛变量非负约束（第3*N到4*N-1行）
     for (int k = 0; k < N; k++) {
-        lower_bound(4*N + k) = 0.0;  // slack_k >= 0
-        upper_bound(4*N + k) = std::numeric_limits<double>::infinity();
+        lower_bound(3*N + k) = 0.0;  // slack_k >= 0
+        upper_bound(3*N + k) = std::numeric_limits<double>::infinity();
     }
     
     // 设置问题数据
