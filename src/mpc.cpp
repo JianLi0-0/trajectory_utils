@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <Eigen/Dense>
 #include <OsqpEigen/OsqpEigen.h>
+#ifdef HAVE_QPOASES
+#include <qpOASES.hpp>
+#endif
 #include <ros/ros.h>
 #include <chrono>
 
@@ -116,32 +119,18 @@ MatrixXd MPC::solve(
     int total_variables = 3 * N;
     
     // 扩展Hessian矩阵和梯度向量
-    MatrixXd Hesse_original = 2 * (B_bar.transpose() * Q * B_bar + R);
-    MatrixXd Hesse_expanded = MatrixXd::Zero(total_variables, total_variables);
-    Hesse_expanded.block(0, 0, 2*N, 2*N) = Hesse_original;
+    MatrixXd hessian = MatrixXd::Zero(total_variables, total_variables);
+    hessian.block(0, 0, 2*N, 2*N) = 2 * (B_bar.transpose() * Q * B_bar + R);
     // 松弛变量的权重（对角线）
     for (int i = 0; i < N; i++) {
-        Hesse_expanded(2*N + i, 2*N + i) = 2 * 1000.0;  // 松弛变量权重为10.0
+        hessian(2*N + i, 2*N + i) = 2 * 1000.0;  // 松弛变量权重为10.0
     }
     
-    VectorXd gradient_original = 2 * B_bar.transpose() * Q * E;
-    VectorXd gradient_expanded = VectorXd::Zero(total_variables);
-    gradient_expanded.head(2*N) = gradient_original;
+    VectorXd gradient = VectorXd::Zero(total_variables);
+    gradient.head(2*N) = 2 * B_bar.transpose() * Q * E;
     // 松弛变量的梯度为0
 
-    std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - start;
-    ROS_INFO("MPC Problem formulation time taken: %f ms", elapsed.count());
-
-    start = std::chrono::high_resolution_clock::now();
-    
-    // 使用OSQP求解器
-    OsqpEigen::Solver solver;
-    
-    // 设置求解器参数
-    solver.settings()->setVerbosity(false);
-    solver.settings()->setWarmStart(true);
-    
-    Eigen::SparseMatrix<double> sparse_H(Hesse_expanded.sparseView());
+    Eigen::SparseMatrix<double> sparse_H(hessian.sparseView());
 
     
     double current_v = X_k(3);  // 当前速度
@@ -208,13 +197,91 @@ MatrixXd MPC::solve(
         lower_bound(3*N + k) = 0.0;  // slack_k >= 0
         upper_bound(3*N + k) = std::numeric_limits<double>::infinity();
     }
+
+    Eigen::VectorXd solution = VectorXd::Zero(total_variables);
+
+    std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - start;
+    ROS_INFO("MPC Problem formulation time taken: %f ms", elapsed.count());
+
+    start = std::chrono::high_resolution_clock::now();
+
+    // 初始化求解器
+#ifdef HAVE_QPOASES
+    using namespace qpOASES;
+    static SQProblem qp_solver(total_variables, total_constraints);
+    static bool qp_initialized = false;
+    // 构造变量边界
+    static VectorXd lb_x(total_variables), ub_x(total_variables);
+
+    // 将 Hessian 和约束矩阵转换为行优先存储，以匹配 QPOASES 要求
+    Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> A_dense(sparse_A);
+    VectorXd lbA = lower_bound;
+    VectorXd ubA = upper_bound;
+
+    int nWSR = 800;
+    // 调用 init 或 hotstart，并检查返回值
+    returnValue qp_ret;
+    if (!qp_initialized) {
+
+        for (int i = 0; i < 2 * N; i++) {
+            if (i % 2 == 0) {
+                lb_x(i) = a_min_;
+                ub_x(i) = a_max_;
+            } else {
+                lb_x(i) = w_min_;
+                ub_x(i) = w_max_;
+            }
+        }
+        // 松弛变量非负约束（第3*N到4*N-1行）
+        for (int k = 0; k < N; k++) {
+            lb_x(2*N + k) = 0.0;  // slack_k >= 0
+            ub_x(2*N + k) = std::numeric_limits<double>::infinity();
+        }
+
+        qp_ret = qp_solver.init(hessian.data(), gradient.data(), A_dense.data(),
+                                lb_x.data(), ub_x.data(), lbA.data(), ubA.data(), nWSR);
+        if (qp_ret != SUCCESSFUL_RETURN) ROS_ERROR("QPOASES init failed: %d", qp_ret);
+        qp_initialized = true;
+    } else {
+        qp_ret = qp_solver.hotstart(hessian.data(), gradient.data(), A_dense.data(),
+            lb_x.data(), ub_x.data(), lbA.data(), ubA.data(), nWSR);
+        if (qp_ret != SUCCESSFUL_RETURN) {
+            ROS_ERROR("QPOASES hotstart failed: %d", qp_ret);
+        }
+    }
+    // 获取解
+    double* xOpt = new double[total_variables];
+    qp_solver.getPrimalSolution(xOpt);
+
+    for (int i = 0; i < total_variables; i++) solution(i) = xOpt[i];
+    delete[] xOpt;
+    // 构建结果矩阵 [a, w]
+    Vector2d u_k_qp;
+    MatrixXd U_result_qp = MatrixXd::Zero(2, N);
+    for (int i = 0; i < N; i++) {
+        u_k_qp(0) = solution(2 * i);
+        u_k_qp(1) = solution(2 * i + 1);
+        U_result_qp.col(i) = u_k_qp;
+    }
+
+    elapsed = std::chrono::high_resolution_clock::now() - start;
+    ROS_INFO("MPC QPOASES Time taken: %f ms", elapsed.count());
+
+    return U_result_qp;
+#else
+    // 使用OSQP求解器
+    OsqpEigen::Solver solver;
     
+    // 设置求解器参数
+    solver.settings()->setVerbosity(false);
+    solver.settings()->setWarmStart(true);
+
     // 设置问题数据
     solver.data()->setNumberOfVariables(total_variables);  // 使用3*N个变量（包含松弛变量）
     solver.data()->setNumberOfConstraints(total_constraints);  // 使用新的约束数量
     if (!solver.data()->setHessianMatrix(sparse_H)) 
         ROS_ERROR("MPC Problem failed to setHessianMatrix !");
-    if (!solver.data()->setGradient(gradient_expanded))  // 使用扩展梯度
+    if (!solver.data()->setGradient(gradient))  // 使用扩展梯度
         ROS_ERROR("MPC Problem failed to setGradient !");
     if (!solver.data()->setLinearConstraintsMatrix(sparse_A))
         ROS_ERROR("MPC Problem failed to setLinearConstraintsMatrix !");
@@ -227,7 +294,6 @@ MatrixXd MPC::solve(
     if (!solver.initSolver()) 
         ROS_ERROR("MPC Problem failed to initSolver !");
 
-    Eigen::VectorXd solution;
     // 执行求解
     if (solver.solveProblem() == OsqpEigen::ErrorExitFlag::NoError) {
         solution = solver.getSolution();
@@ -258,6 +324,7 @@ MatrixXd MPC::solve(
     }
     
     return U_result;
+#endif
 }
 
 bool MPC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
