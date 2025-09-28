@@ -93,12 +93,12 @@ public:
             // y-update: dual variable update
             y_vector_ += rho_value_ * (Ax_hat - z_vector_);
 
-            // Compute residuals
-            double r_norm = (A_matrix_ * x_vector_ - z_vector_).norm();
-            double s_norm = (rho_value_ * A_matrix_.transpose() * (z_vector_ - z_old)).norm();
-
             // Dynamic rho update every check_interval iterations
             if ((k+1) % check_interval == 0) {
+                // Compute residuals
+                double r_norm = (A_matrix_ * x_vector_ - z_vector_).norm();
+                double s_norm = (rho_value_ * A_matrix_.transpose() * (z_vector_ - z_old)).norm();
+
                 if (r_norm > mu * s_norm) {
                     rho_value_ *= tau_incr;
                     SetupKkt();  // recompute Cholesky factorization
@@ -106,22 +106,22 @@ public:
                     rho_value_ /= tau_decr;
                     SetupKkt();  // recompute Cholesky factorization
                 }
+
+                // Compute tolerances
+                double eps_pri = sqrt((double)m)*eps_abs_value_ + eps_rel_value_*std::max((A_matrix_*x_vector_).norm(), z_vector_.norm());
+                double eps_dual = sqrt((double)n)*eps_abs_value_ + eps_rel_value_*(A_matrix_.transpose()*y_vector_).norm();
+
+                std::cout << "Iter " << k+1 << ": r_norm = " << r_norm << ", s_norm = " << s_norm
+                          << ", eps_pri = " << eps_pri << ", eps_dual = " << eps_dual << ", rho = " << rho_value_ << std::endl;
+
+                // Check convergence
+                if (r_norm <= eps_pri && s_norm <= eps_dual) {
+                    std::cout << "Converged in " << k << " iterations." << std::endl;
+                    break;
+                }
             }
 
             z_old = z_vector_;  // save previous z for dual residual
-
-            // Compute tolerances
-            double eps_pri = sqrt((double)m)*eps_abs_value_ + eps_rel_value_*std::max((A_matrix_*x_vector_).norm(), z_vector_.norm());
-            double eps_dual = sqrt((double)n)*eps_abs_value_ + eps_rel_value_*(A_matrix_.transpose()*y_vector_).norm();
-
-            std::cout << "Iter " << k+1 << ": r_norm = " << r_norm << ", s_norm = " << s_norm
-                      << ", eps_pri = " << eps_pri << ", eps_dual = " << eps_dual << ", rho = " << rho_value_ << std::endl;
-
-            // Check convergence
-            if (r_norm <= eps_pri && s_norm <= eps_dual) {
-                std::cout << "Converged in " << k << " iterations." << std::endl;
-                break;
-            }
         }
     }
 

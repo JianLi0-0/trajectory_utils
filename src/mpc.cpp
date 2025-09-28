@@ -139,7 +139,7 @@ MatrixXd MPC::solve(
     OsqpEigen::Solver solver;
     
     // 设置求解器参数
-    solver.settings()->setVerbosity(false);
+    solver.settings()->setVerbosity(true);
     solver.settings()->setWarmStart(true);
     
     Eigen::SparseMatrix<double> sparse_H(Hesse_expanded.sparseView());
@@ -281,6 +281,8 @@ MatrixXd MPC::solve(
 
     elapsed = std::chrono::high_resolution_clock::now() - start;
     std::cout << "Self-developed ADMM time taken: " << elapsed.count() << " ms" << std::endl;
+
+    ROS_WARN(" ADMM first a: %f, w: %f | OSQP first a: %f, w: %f", admm_solution[0], admm_solution[1], solution[0], solution[1]);
     
     return U_result;
 }
