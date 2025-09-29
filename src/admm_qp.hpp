@@ -169,6 +169,7 @@ public:
         double tau_incr = 2.0;
         double tau_decr = 2.0;
         int check_interval = 25;
+        int update_rho_interval = 5;
 
         for (int k = 0; k < max_iter_value_; ++k) {
             // 1. Solve augmented KKT for x_tilde, z_tilde
@@ -186,29 +187,36 @@ public:
             // 4. Dual (scaled) update
             u_vector_ += z_relaxation - z_vector_;
 
-            // 6. Residuals
-            VectorXd Ax = A_matrix_ * x_vector_;
-            double r_norm = (Ax - z_vector_).norm();
-            double s_norm = (rho_value_ * A_matrix_.transpose() * (z_vector_ - z_old)).norm();
+            // Residuals
+            double r_norm, s_norm;
+            VectorXd Ax;
+            if (k % check_interval == 0 || k % update_rho_interval == 0) {
+                Ax = A_matrix_ * x_vector_;
+                r_norm = (Ax - z_vector_).norm();
+                s_norm = (rho_value_ * A_matrix_.transpose() * (z_vector_ - z_old)).norm();
+            }
             z_old = z_vector_;
 
-            bool rho_changed = false;
-            if (r_norm > mu * s_norm && rho_value_ < rho_max_) {
-                rho_value_ *= tau_incr;
-                u_vector_ /= tau_incr;
-                rho_changed = true;
-            } else if (s_norm > mu * r_norm && rho_value_ > rho_min_) {
-                rho_value_ /= tau_decr;
-                u_vector_ *= tau_decr;
-                rho_changed = true;
-            }
-            if (rho_changed) {
-                SetupAugKkt(); // ρ appears in -1/ρ I
-                std::cout << "Iter " << k+1 << ": rho -> " << rho_value_ << std::endl;
+            // Dynamic rho update every update_rho_interval iterations
+            if (k % update_rho_interval == 0) {
+                bool rho_changed = false;
+                if (r_norm > mu * s_norm && rho_value_ < rho_max_) {
+                    rho_value_ *= tau_incr;
+                    u_vector_ /= tau_incr;
+                    rho_changed = true;
+                } else if (s_norm > mu * r_norm && rho_value_ > rho_min_) {
+                    rho_value_ /= tau_decr;
+                    u_vector_ *= tau_decr;
+                    rho_changed = true;
+                }
+                if (rho_changed) {
+                    SetupAugKkt(); // ρ appears in -1/ρ I
+                    std::cout << "Iter " << k+1 << ": rho -> " << rho_value_ << std::endl;
+                }
             }
 
-            // Dynamic rho update every check_interval iterations
-            if (k == 0 || (k+1) % check_interval == 0) {
+            // Convergence check every check_interval iterations
+            if (k % check_interval == 0) {
                 double eps_pri = std::sqrt((double)m)*eps_abs_value_ +
                                  eps_rel_value_*std::max(Ax.norm(), z_vector_.norm());
                 double eps_dual = std::sqrt((double)n)*eps_abs_value_ +

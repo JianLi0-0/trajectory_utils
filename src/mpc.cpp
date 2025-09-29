@@ -8,6 +8,7 @@
 #endif
 #include <ros/ros.h>
 #include <chrono>
+#include "admm_qp.hpp"
 
 #define PI 3.1415926
 
@@ -322,6 +323,18 @@ MatrixXd MPC::solve(
         u_k(1) = solution[2 * i + 1];   // 角速度
         U_result.col(i) = u_k;
     }
+
+    // start = std::chrono::high_resolution_clock::now();
+    //
+    // AdmmQpSolver admm_solver(sparse_H, gradient, sparse_A, lower_bound, upper_bound);
+    // admm_solver.Solve();
+    // Eigen::VectorXd admm_solution = admm_solver.GetSolution();
+    //
+    // elapsed = std::chrono::high_resolution_clock::now() - start;
+    // std::cout << "Self-developed ADMM time taken: " << elapsed.count() << " ms" << std::endl;
+    //
+    // ROS_WARN(" ADMM first a: %f, w: %f | OSQP first a: %f, w: %f", admm_solution[0], admm_solution[1], solution[0], solution[1]);
+
     
     return U_result;
 #endif
