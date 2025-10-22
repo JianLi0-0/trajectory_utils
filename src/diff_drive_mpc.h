@@ -3,6 +3,8 @@
 
 #include <Eigen/Dense>
 #include <geometry_msgs/PoseStamped.h>
+#include <costmap_2d/costmap_2d.h>
+#include <costmap_2d/cost_values.h>
 
 /**
  * @brief N步线性化差速轮MPC类
@@ -15,7 +17,7 @@
  */
 class DiffDriveMPC {
 public:
-    DiffDriveMPC(int N, double Ts);
+    DiffDriveMPC(int N, double Ts, costmap_2d::Costmap2D* costmap_ptr);
 
     void setConstraints(double a_min, double a_max, double w_min, double w_max, double v_max);
 
@@ -24,6 +26,7 @@ public:
     bool solve(const Eigen::Vector4d &state, const Eigen::Vector2d &target, double d_des, Eigen::Vector2d &u_opt);
 
     const std::vector<geometry_msgs::PoseStamped>& getTrajectory() const { return mpc_traj_; }
+    const std::vector<geometry_msgs::PoseStamped>& getReferenceTrajectory() const { return reference_traj_; }
 
 private:
     int N_, n_state_, n_control_;
@@ -33,6 +36,8 @@ private:
     double a_min_, a_max_, w_min_, w_max_, v_max_;
     Eigen::Vector2d last_u_;
     std::vector<geometry_msgs::PoseStamped> mpc_traj_;
+    std::vector<geometry_msgs::PoseStamped> reference_traj_;
+    costmap_2d::Costmap2D* costmap_ptr_;
 };
 
 #endif //DIFF_DRIVE_MPC_H

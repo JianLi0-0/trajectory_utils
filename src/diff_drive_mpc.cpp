@@ -6,9 +6,9 @@
 
 using namespace Eigen;
 
-DiffDriveMPC::DiffDriveMPC(int N, double Ts)
+DiffDriveMPC::DiffDriveMPC(int N, double Ts, costmap_2d::Costmap2D* costmap_ptr)
     : N_(N), Ts_(Ts), n_state_(4), n_control_(2),
-      last_u_(Vector2d::Zero()), mpc_traj_() {
+      last_u_(Vector2d::Zero()), costmap_ptr_(costmap_ptr) {
     setConstraints(-2.0, 1.0, -1.0, 1.0, 2.5);
     setWeights(0.5, 1.0, 5.0, 2.0);
 }
@@ -100,6 +100,8 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
     Vector2d u_k = Vector2d::Zero();
     // u_k(1) = w_ff; // 将前馈角速度作为线性化参考
 
+    reference_traj_.clear();
+    reference_traj_.resize(N_);
     for(int k=0;k<N_;k++){
         double theta = s_k(2);
         double v = s_k(3);
@@ -125,6 +127,11 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
         c[k] = f - A[k]*s_k - B[k]*u_k;
 
         s_k = f;
+
+        reference_traj_[k].header.frame_id = "map";
+        reference_traj_[k].pose.position.x = s_k(0);
+        reference_traj_[k].pose.position.y = s_k(1);
+        reference_traj_[k].pose.orientation = tf::createQuaternionMsgFromYaw(s_k(2));
     }
 
     // =========================
