@@ -19,7 +19,7 @@ public:
 
     void setConstraints(double a_min, double a_max, double w_min, double w_max, double v_max);
 
-    void setWeights(double w_state, double w_input, double w_r, double w_theta);
+    void setWeights(double w_state, double w_a, double w_omega, double w_r, double w_theta);
 
     bool solve(const Eigen::Vector4d &state, const Eigen::Vector2d &target, double d_des, Eigen::Vector2d &u_opt);
 
@@ -28,7 +28,7 @@ public:
 private:
     int N_, n_state_, n_control_;
     double Ts_;
-    double w_state_, w_input_;
+    double w_state_, w_a_, w_omega_;
     double w_r_, w_theta_;
     double a_min_, a_max_, w_min_, w_max_, v_max_;
     Eigen::Vector2d last_u_;

@@ -8,11 +8,9 @@ using namespace Eigen;
 
 DiffDriveMPC::DiffDriveMPC(int N, double Ts)
     : N_(N), Ts_(Ts), n_state_(4), n_control_(2),
-      w_state_(1.0), w_input_(0.1), w_r_(10.0), w_theta_(5.0),
-      a_min_(-1.0), a_max_(1.0), w_min_(-1.0), w_max_(1.0), v_max_(2.0),
       last_u_(Vector2d::Zero()), mpc_traj_() {
     setConstraints(-2.0, 1.0, -1.0, 1.0, 2.5);
-    setWeights(1.0, 0.5, 5.0, 2.0);
+    setWeights(1.0, 0.5, 0.2, 5.0, 2.0);
 }
 
 void DiffDriveMPC::setConstraints(double a_min, double a_max, double w_min, double w_max, double v_max) {
@@ -21,12 +19,65 @@ void DiffDriveMPC::setConstraints(double a_min, double a_max, double w_min, doub
     v_max_ = v_max;
 }
 
-void DiffDriveMPC::setWeights(double w_state, double w_input, double w_r, double w_theta) {
-    w_state_ = w_state; w_input_ = w_input;
-    w_r_ = w_r; w_theta_ = w_theta;
+void DiffDriveMPC::setWeights(double w_state, double w_a, double w_omega, double w_r, double w_theta) {
+    w_state_ = w_state;
+    w_a_ = w_a;
+    w_omega_ = w_omega;
+    w_r_ = w_r;
+    w_theta_ = w_theta;
 }
 
 bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d_des, Vector2d &u_opt) {
+    /*
+     * =================================================================================================
+     * MPC Optimization Problem Formulation
+     * =================================================================================================
+     *
+     * The goal is to find an optimal control sequence U = [u_0, u_1, ..., u_{N-1}] that minimizes a cost
+     * function over a prediction horizon N, subject to system dynamics and constraints.
+     *
+     * State vector:      x = [x, y, theta, v]^T  (position, orientation, velocity)
+     * Control vector:    u = [a, w]^T            (acceleration, angular velocity)
+     *
+     * Cost Function (to be minimized):
+     *   J(U) = sum_{k=0}^{N-1} [ (x_k - x_ref)^T * Q * (x_k - x_ref) + u_k^T * R * u_k ] + (p_N - p_ref)^T * Q_N * (p_N - p_ref)
+     *
+     *   - (x_k - x_ref)^T * Q * (x_k - x_ref): Penalizes deviation from the reference state (target position).
+     *   - u_k^T * R * u_k: Penalizes control effort.
+     *   - (p_N - p_ref)^T * Q_N * (p_N - p_ref): Penalizes the distance between the final predicted position (p_N)
+     *     and a virtual reference point (p_ref), which is at a desired distance 'd_des' from the final target.
+     *
+     * Subject to the following constraints:
+     *
+     * 1. System Dynamics (discrete-time nonlinear model):
+     *    x_{k+1} = f(x_k, u_k)
+     *    x_{k+1}(0) = x_k(0) + Ts * x_k(3) * cos(x_k(2))
+     *    x_{k+1}(1) = x_k(1) + Ts * x_k(3) * sin(x_k(2))
+     *    x_{k+1}(2) = x_k(2) + Ts * u_k(1)
+     *    x_{k+1}(3) = x_k(3) + Ts * u_k(0)
+     *
+     * 2. Initial State:
+     *    x_0 = current_state
+     *
+     * 3. Control Input Constraints:
+     *    a_min <= u_k(0) <= a_max      (for k = 0 to N-1)
+     *    w_min <= u_k(1) <= w_max      (for k = 0 to N-1)
+     *
+     * 4. State Constraints:
+     *    0 <= x_k(3) <= v_max          (for k = 1 to N)
+     *
+     * The problem is then linearized and converted into a Quadratic Programming (QP) problem of the form:
+     *
+     * Minimize:
+     *   1/2 * U^T * H * U + f^T * U
+     *
+     * Subject to:
+     *   l <= A_c * U <= u
+     *
+     * which is then solved by the OSQP solver.
+     * =================================================================================================
+     */
+
     // =========================
     // 1. N步预测模型线性化
     // =========================
@@ -37,13 +88,13 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
     Vector4d s_k = state;
 
     // 计算前馈角速度
-    double angle_to_target = atan2(target(1) - state(1), target(0) - state(0));
-    double angle_error = angle_to_target - state(2);
-    // 将角度误差归一化到[-PI, PI]
-    while (angle_error > M_PI) angle_error -= 2.0 * M_PI;
-    while (angle_error < -M_PI) angle_error += 2.0 * M_PI;
-    double w_ff = 2.0 * angle_error; // k_p = 2.0 是一个比例增益，可以调整
-    w_ff = std::max(w_min_, std::min(w_max_, w_ff)); // 限制在角速度范围内
+    // double angle_to_target = atan2(target(1) - state(1), target(0) - state(0));
+    // double angle_error = angle_to_target - state(2);
+    // // 将角度误差归一化到[-PI, PI]
+    // while (angle_error > M_PI) angle_error -= 2.0 * M_PI;
+    // while (angle_error < -M_PI) angle_error += 2.0 * M_PI;
+    // double w_ff = 2.0 * angle_error; // k_p = 2.0 是一个比例增益，可以调整
+    // w_ff = std::max(w_min_, std::min(w_max_, w_ff)); // 限制在角速度范围内
 
     Vector2d u_k = Vector2d::Zero();
     // u_k(1) = w_ff; // 将前馈角速度作为线性化参考
@@ -111,21 +162,50 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
     MatrixXd Q = MatrixXd::Zero(n_state_, n_state_);
     Q(0,0) = w_r_; // weight for x
     Q(1,1) = w_r_; // weight for y
+    Q(2,2) = w_theta_; // weight for theta
     MatrixXd Q_bar = MatrixXd::Zero(N_*n_state_, N_*n_state_);
     for(int i=0; i<N_; ++i) {
         Q_bar.block(i*n_state_, i*n_state_, n_state_, n_state_) = Q;
     }
 
-    MatrixXd R_bar = MatrixXd::Identity(N_*n_control_,N_*n_control_)*w_input_;
+    MatrixXd R_bar = MatrixXd::Zero(N_*n_control_,N_*n_control_);
+    for(int i=0; i<N_; ++i) {
+        R_bar(i*2, i*2) = w_a_;
+        R_bar(i*2+1, i*2+1) = w_omega_;
+    }
 
+    double angle_to_target = atan2(target(1) - state(1), target(0) - state(0));
     VectorXd x_ref = VectorXd::Zero(N_*n_state_);
     for(int i=0; i<N_; ++i) {
         x_ref(i*n_state_ + 0) = target(0);
         x_ref(i*n_state_ + 1) = target(1);
+        x_ref(i*n_state_ + 2) = angle_to_target;
     }
 
     MatrixXd H = B_bar.transpose()*Q_bar*B_bar + R_bar;
     VectorXd f = B_bar.transpose()*Q_bar*(A_bar*state + C_bar - x_ref);
+
+    // 增加末端距离惩罚项，使得车辆停在距离目标点 d_des 的位置
+    double w_dist_penalty = 1000.1; // 距离惩罚权重，可以调整
+    MatrixXd S_N = MatrixXd::Zero(2, N_ * n_state_);
+    S_N(0, (N_ - 1) * n_state_ + 0) = 1.0; // 提取预测时域末端的 x 坐标
+    S_N(1, (N_ - 1) * n_state_ + 1) = 1.0; // 提取预测时域末端的 y 坐标
+
+    MatrixXd B_N = S_N * B_bar;
+    VectorXd A_N_s0_plus_C_N = S_N * (A_bar * state + C_bar);
+
+    // 为了让车辆停在距离目标点 d_des 的位置，我们设定一个虚拟的参考点 p_ref。
+    // 该参考点位于当前车辆位置与目标点之间的连线上，且距离目标点为 d_des。
+    // 代价函数会惩罚预测的末端位置与这个虚拟参考点之间的距离。
+    Vector2d current_pos = state.head<2>();
+    Vector2d vec_to_target = target - current_pos;
+    Vector2d p_ref = target - vec_to_target.normalized() * d_des;
+
+    // 为代价函数增加末端惩罚项: w_dist * || p_N - p_ref ||^2
+    // 其中 p_N = B_N * U + A_N_s0_plus_C_N 是预测的末端位置。
+    // 这会更新 QP 问题的 H 矩阵和 f 向量。
+    H += 2.0 * w_dist_penalty * B_N.transpose() * B_N;
+    f += 2.0 * w_dist_penalty * B_N.transpose() * (A_N_s0_plus_C_N - p_ref);
 
     // =========================
     // 4. 约束
