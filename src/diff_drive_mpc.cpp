@@ -10,7 +10,7 @@ DiffDriveMPC::DiffDriveMPC(int N, double Ts)
     : N_(N), Ts_(Ts), n_state_(4), n_control_(2),
       last_u_(Vector2d::Zero()), mpc_traj_() {
     setConstraints(-2.0, 1.0, -1.0, 1.0, 2.5);
-    setWeights(1.0, 0.5, 0.2, 5.0, 2.0);
+    setWeights(0.5, 1.0, 5.0, 2.0);
 }
 
 void DiffDriveMPC::setConstraints(double a_min, double a_max, double w_min, double w_max, double v_max) {
@@ -19,11 +19,12 @@ void DiffDriveMPC::setConstraints(double a_min, double a_max, double w_min, doub
     v_max_ = v_max;
 }
 
-void DiffDriveMPC::setWeights(double w_state, double w_a, double w_omega, double w_r, double w_theta) {
-    w_state_ = w_state;
+void DiffDriveMPC::setWeights(double w_a, double w_omega, double w_r, double w_theta) {
+    // control weights
     w_a_ = w_a;
     w_omega_ = w_omega;
-    w_r_ = w_r;
+    // state weights
+    w_position_ = w_r;
     w_theta_ = w_theta;
 }
 
@@ -160,8 +161,8 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
     // J = sum (x_k - x_ref)'*Q*(x_k - x_ref) + u_k'*R*u_k
     // =========================
     MatrixXd Q = MatrixXd::Zero(n_state_, n_state_);
-    Q(0,0) = w_r_; // weight for x
-    Q(1,1) = w_r_; // weight for y
+    Q(0,0) = w_position_; // weight for x
+    Q(1,1) = w_position_; // weight for y
     Q(2,2) = w_theta_; // weight for theta
     MatrixXd Q_bar = MatrixXd::Zero(N_*n_state_, N_*n_state_);
     for(int i=0; i<N_; ++i) {
@@ -175,6 +176,9 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
     }
 
     double angle_to_target = atan2(target(1) - state(1), target(0) - state(0));
+    // Normalize angle_to_target to be within [-PI, PI] of the current angle
+    angle_to_target = state(2) + atan2(sin(angle_to_target - state(2)), cos(angle_to_target - state(2)));
+
     VectorXd x_ref = VectorXd::Zero(N_*n_state_);
     for(int i=0; i<N_; ++i) {
         x_ref(i*n_state_ + 0) = target(0);
