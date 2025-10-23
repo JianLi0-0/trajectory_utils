@@ -16,6 +16,11 @@ endif()
 
 find_package(catkin REQUIRED COMPONENTS
         roscpp
+        costmap_2d
+        grid_map_core
+        grid_map_ros
+        grid_map_sdf
+        cv_bridge
 )
 
 find_package(ruckig REQUIRED)
@@ -68,6 +73,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 target_link_libraries(${PROJECT_NAME}
         ${catkin_LIBRARIES}
+        grid_map_ros
         ruckig::ruckig
         protobuf
         Python3::Python
