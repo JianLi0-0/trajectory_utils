@@ -8,14 +8,14 @@
 #include <grid_map_costmap_2d/Costmap2DConverter.hpp>
 #include <grid_map_ros/grid_map_ros.hpp>
 #include <geometry_msgs/PoseArray.h>
-#include "eigen2cv.hpp"
+#include <opencv2/core/eigen.hpp>
 
 using namespace Eigen;
 using namespace grid_map;
 
 DiffDriveMPC::DiffDriveMPC(int N, double Ts, costmap_2d::Costmap2D* costmap_ptr)
     : N_(N), Ts_(Ts), n_state_(4), n_control_(2),
-      last_u_(Vector2d::Zero()), costmap_ptr_(costmap_ptr), sdf_(std::vector<std::string>{"obstacle", "distance"}) {
+      last_u_(Vector2d::Zero()), costmap_ptr_(costmap_ptr), sdf_(std::vector<std::string>{"obstacle", "distance", "grad_x", "grad_y"}) {
     setConstraints(-2.0, 1.0, -1.0, 1.0, 2.5);
     setWeights(0.5, 1.0, 5.0, 2.0);
 
@@ -502,11 +502,27 @@ void DiffDriveMPC::generateDistanceMap() {
     // Update distance layer.
     Eigen::Matrix<unsigned char, Eigen::Dynamic, Eigen::Dynamic> binary =
             sdf_.get("obstacle").cast<unsigned char>();
-    cv::distanceTransform(eigen2cv(binary), eigen2cv(sdf_.get("distance")),
-                          CV_DIST_L2, CV_DIST_MASK_PRECISE);
+    cv::Mat binary_cv;
+    cv::eigen2cv(binary, binary_cv);
+    cv::Mat distance_cv;
+    cv::distanceTransform(binary_cv, distance_cv, CV_DIST_L2, CV_DIST_MASK_PRECISE);
+    cv::cv2eigen(distance_cv, sdf_.get("distance"));
     auto map_resolution = costmap_ptr_->getResolution();
-    ROS_INFO("map resolution:%f", map_resolution);
+    // cv::distanceTransform 计算的距离是以像素为单位的。
+    // 此处将其乘以地图分辨率，从而将距离单位转换为米。
+    // 这对于后续在物理单位（米）中进行的安全计算（如CBF）至关重要。
     sdf_.get("distance") *= map_resolution;
+
+    // 计算距离图的梯度 - 修正坐标系问题，不使用eigen2cv函数
+    cv::Mat grad_x_cv, grad_y_cv;
+    
+    // 使用Sobel算子计算梯度
+    cv::Sobel(distance_cv, grad_y_cv, CV_32F, 1, 0, 3); // x方向梯度 -> grid_map的y方向
+    cv::Sobel(distance_cv, grad_x_cv, CV_32F, 0, 1, 3); // y方向梯度 -> grid_map的x方向
+    
+    // 转换为Eigen矩阵并直接赋值
+    cv::cv2eigen(grad_x_cv, sdf_.get("grad_x"));
+    cv::cv2eigen(grad_y_cv, sdf_.get("grad_y"));
 }
 
 nav_msgs::OccupancyGrid DiffDriveMPC::getSdfAsOccupancyGrid() const {
@@ -519,6 +535,81 @@ nav_msgs::OccupancyGrid DiffDriveMPC::getSdfAsOccupancyGrid() const {
     return occupancy_grid;
 }
 
+nav_msgs::OccupancyGrid DiffDriveMPC::getGradXAsOccupancyGrid() const {
+    nav_msgs::OccupancyGrid occupancy_grid;
+    if (sdf_.exists("grad_x")) {
+        float min_val = sdf_.get("grad_x").minCoeffOfFinites();
+        float max_val = sdf_.get("grad_x").maxCoeffOfFinites();
+        grid_map::GridMapRosConverter::toOccupancyGrid(sdf_, "grad_x", min_val, max_val, occupancy_grid);
+    }
+    return occupancy_grid;
+}
+
+nav_msgs::OccupancyGrid DiffDriveMPC::getGradYAsOccupancyGrid() const {
+    nav_msgs::OccupancyGrid occupancy_grid;
+    if (sdf_.exists("grad_y")) {
+        float min_val = sdf_.get("grad_y").minCoeffOfFinites();
+        float max_val = sdf_.get("grad_y").maxCoeffOfFinites();
+        grid_map::GridMapRosConverter::toOccupancyGrid(sdf_, "grad_y", min_val, max_val, occupancy_grid);
+    }
+    return occupancy_grid;
+}
+
 geometry_msgs::PoseArray DiffDriveMPC::getSdfGradientsAsArrows() const {
-    return sdf_gradients_;
+    geometry_msgs::PoseArray pose_array;
+    pose_array.header.frame_id = "map";
+    pose_array.header.stamp = ros::Time::now();
+    
+    // Check if gradient layers exist
+    if (!sdf_.exists("grad_x") || !sdf_.exists("grad_y")) {
+        ROS_WARN("Gradient layers do not exist in SDF");
+        return pose_array;
+    }
+    
+    // Sampling parameters
+    int skip_cells = 5; // Skip every N cells to reduce arrow density
+    double min_gradient_magnitude = 0.1; // Minimum gradient magnitude to display arrow
+    
+    // Get grid map properties
+    const auto& grad_x_layer = sdf_.get("grad_x");
+    const auto& grad_y_layer = sdf_.get("grad_y");
+    
+    // Iterate through the grid map at sampled intervals
+    for (grid_map::GridMapIterator iterator(sdf_); !iterator.isPastEnd(); ++iterator) {
+        const grid_map::Index index = *iterator;
+        
+        // Skip cells to reduce density
+        // if (index(0) % skip_cells != 0 || index(1) % skip_cells != 0) {
+        //     continue;
+        // }
+        
+        // Get gradient values at this cell
+        double grad_x = grad_x_layer(index(0), index(1));
+        double grad_y = grad_y_layer(index(0), index(1));
+        
+        // Skip if gradient magnitude is too small
+        double gradient_magnitude = sqrt(grad_x * grad_x + grad_y * grad_y);
+        if (gradient_magnitude < min_gradient_magnitude) {
+            continue;
+        }
+        
+        // Convert grid index to world position
+        grid_map::Position world_position;
+        sdf_.getPosition(index, world_position);
+        
+        // Create pose for arrow
+        geometry_msgs::Pose arrow_pose;
+        arrow_pose.position.x = world_position(0);
+        arrow_pose.position.y = world_position(1);
+        arrow_pose.position.z = 0.0;
+        
+        // Calculate orientation from gradient direction
+        double arrow_yaw = atan2(grad_y, grad_x);
+        arrow_pose.orientation = tf::createQuaternionMsgFromYaw(arrow_yaw);
+        
+        pose_array.poses.push_back(arrow_pose);
+    }
+    
+    ROS_DEBUG("Generated %lu gradient arrows from grid_map", pose_array.poses.size());
+    return pose_array;
 }

@@ -35,6 +35,10 @@ public:
 
     nav_msgs::OccupancyGrid getSdfAsOccupancyGrid() const;
 
+    nav_msgs::OccupancyGrid getGradXAsOccupancyGrid() const;
+
+    nav_msgs::OccupancyGrid getGradYAsOccupancyGrid() const;
+
     geometry_msgs::PoseArray getSdfGradientsAsArrows() const;
 
     void generateDistanceMap();
