@@ -18,8 +18,6 @@ find_package(catkin REQUIRED COMPONENTS
         roscpp
         costmap_2d
         grid_map_core
-        grid_map_ros
-        grid_map_sdf
         cv_bridge
 )
 

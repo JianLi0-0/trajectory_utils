@@ -3,10 +3,10 @@
 
 #include <Eigen/Dense>
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PoseArray.h>
 #include <costmap_2d/costmap_2d.h>
 #include <grid_map_core/grid_map_core.hpp>
-#include <grid_map_sdf/SignedDistanceField.hpp>
-#include <memory>
+#include <nav_msgs/OccupancyGrid.h>
 
 /**
  * @brief N步线性化差速轮MPC类
@@ -27,12 +27,18 @@ public:
 
     bool solve(const Eigen::Vector4d &state, const Eigen::Vector2d &target, double d_des, Eigen::Vector2d &u_opt);
 
+    bool applySafetyFilter(const Eigen::Vector4d& state, const Eigen::Vector2d& u_des, Eigen::Vector2d& u_safe);
+
     const std::vector<geometry_msgs::PoseStamped>& getTrajectory() const { return mpc_traj_; }
 
     const std::vector<geometry_msgs::PoseStamped>& getReferenceTrajectory() const { return reference_traj_; }
 
-private:
+    nav_msgs::OccupancyGrid getSdfAsOccupancyGrid() const;
+
+    geometry_msgs::PoseArray getSdfGradientsAsArrows() const;
+
     void generateDistanceMap();
+private:
 
     int N_, n_state_, n_control_;
     double Ts_;
@@ -43,8 +49,8 @@ private:
     std::vector<geometry_msgs::PoseStamped> mpc_traj_;
     std::vector<geometry_msgs::PoseStamped> reference_traj_;
     costmap_2d::Costmap2D* costmap_ptr_;
-    grid_map::GridMap map_;
-    std::unique_ptr<grid_map::SignedDistanceField> sdf_;
+    grid_map::GridMap sdf_;
+    geometry_msgs::PoseArray sdf_gradients_;
 };
 
 #endif //DIFF_DRIVE_MPC_H

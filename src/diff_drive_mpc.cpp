@@ -3,18 +3,24 @@
 #include <cmath>
 #include <tf/transform_datatypes.h>
 #include <costmap_2d/cost_values.h>
-#include <grid_map_ros/grid_map_ros.hpp>
-#include <grid_map_costmap_2d/Costmap2DConverter.hpp>
+#include <opencv2/opencv.hpp>
 #include <OsqpEigen/OsqpEigen.h>
+#include <grid_map_costmap_2d/Costmap2DConverter.hpp>
+#include <grid_map_ros/grid_map_ros.hpp>
+#include <geometry_msgs/PoseArray.h>
+#include "eigen2cv.hpp"
 
 using namespace Eigen;
 using namespace grid_map;
 
 DiffDriveMPC::DiffDriveMPC(int N, double Ts, costmap_2d::Costmap2D* costmap_ptr)
     : N_(N), Ts_(Ts), n_state_(4), n_control_(2),
-      last_u_(Vector2d::Zero()), costmap_ptr_(costmap_ptr) {
+      last_u_(Vector2d::Zero()), costmap_ptr_(costmap_ptr), sdf_(std::vector<std::string>{"obstacle", "distance"}) {
     setConstraints(-2.0, 1.0, -1.0, 1.0, 2.5);
     setWeights(0.5, 1.0, 5.0, 2.0);
+
+    sdf_.setFrameId("map");
+    sdf_.setGeometry(grid_map::Length(costmap_ptr_->getSizeInMetersX(), costmap_ptr_->getSizeInMetersY()), costmap_ptr_->getResolution());
 }
 
 void DiffDriveMPC::setConstraints(double a_min, double a_max, double w_min, double w_max, double v_max) {
@@ -323,20 +329,196 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
     return true;
 }
 
-// std::pair<double, SignedDistanceField::Derivative3> SignedDistanceField::valueAndDerivative(const Position3& position)
+bool DiffDriveMPC::applySafetyFilter(const Eigen::Vector4d& state, const Eigen::Vector2d& u_des, Eigen::Vector2d& u_safe) {
+    /*
+     * =================================================================================================
+     * 基于单步离散动力学的一阶CBF安全滤波器 (不使用二阶导数)
+     * =================================================================================================
+     *
+     * 目标: 找到一个安全的控制输入 u_safe = [a, w]^T，它与期望的 u_des 尽可能接近，
+     * 同时满足安全约束 h(x_{k+1}) >= (1-gamma)h(x_k)。
+     *
+     * 1. 安全函数 h(x):
+     *    h(x) = d(p) - d_stop = d(p) - v^2 / (2 * a_decel_max)
+     *    其中 d(p) 是到障碍物的距离，v 是当前速度，a_decel_max 是最大减速度。
+     *    h(x) >= 0 意味着车辆有足够距离在撞到障碍物前停下。
+     *
+     * 2. 离散CBF约束 (一阶泰勒展开后):
+     *    h(x_k) + ∇h(x_k)^T * (x_{k+1} - x_k) >= (1 - gamma) * h(x_k)
+     *    => ∇h(x_k)^T * (x_{k+1} - x_k) >= -gamma * h(x_k)
+     *
+     * 3. 离散动力学 (x_{k+1} - x_k):
+     *    Δx = x_{k+1} - x_k = [Ts*v*cos(theta), Ts*v*sin(theta), Ts*w, Ts*a]^T
+     *
+     * 4. 整合得到关于 u_k = [a, w]^T 的线性不等式:
+     *    ∇h(x_k)^T * Δx >= -gamma * h(x_k)
+     *    [∇h₃*Ts, ∇h₂*Ts] * [a, w]ᵀ >= -gamma*h_k - [∇h₀, ∇h₁] * [Ts*v*cosθ, Ts*v*sinθ]ᵀ
+     *    这可以被构造成 A*u <= b 的形式。
+     *
+     * 优化问题 (QP):
+     *   minimize_{u_safe, s}  ||u_safe - u_des||^2 + rho * s^2
+     *
+     *   subject to:
+     *   1. CBF 安全约束 (含松弛变量 s):
+     *      A_cbf * u_safe - s <= b_cbf
+     *
+     *   2. 控制/速度/松弛变量约束
+     * =================================================================================================
+     */
+
+    // 1. 获取SDF及其一阶导数
+    generateDistanceMap();
+    if (sdf_.getLayers().empty()) {
+        u_safe = u_des;
+        return true;
+    }
+
+    grid_map::Position current_pos(state(0), state(1));
+    if (!sdf_.isInside(current_pos)) {
+        u_safe = u_des;
+        return true; // Out of bounds
+    }
+    double dist = sdf_.atPosition("distance", current_pos);
+    double grad_x = sdf_.atPosition("grad_x", current_pos);
+    double grad_y = sdf_.atPosition("grad_y", current_pos);
+
+
+    // 2. 计算 h(x_k) 和 ∇h(x_k)
+    double theta = state(2);
+    double v = state(3);
+    double a_decel_max = 0.8; // 最大减速度 (正值)
+
+    double h_k = dist - (v * v) / (2.0 * a_decel_max);
+
+    Eigen::Vector4d grad_h;
+    grad_h(0) = grad_x; // ∂h/∂x = ∂d/∂x
+    grad_h(1) = grad_y; // ∂h/∂y = ∂d/∂y
+    // 近似 ∂h/∂θ = ∂d/∂θ ≈ (∂p/∂θ) * ∇d
+    // ∂p/∂θ = [-v*sin(θ), v*cos(θ)]^T
+    grad_h(2) = grad_h(0) * (-v * Ts_ * sin(theta)) + grad_h(1) * (v * Ts_ * cos(theta));
+    grad_h(3) = -v / a_decel_max;      // ∂h/∂v
+
+    // 3. 构建 QP 问题
+    // min 0.5 * x' * H * x + f' * x, where x = [a, w, s]^T
+    int n_vars = 3; // a, w, s
+    Eigen::Matrix3d H_qp = Eigen::Matrix3d::Identity();
+    H_qp(0,0) = 2.0;
+    H_qp(1,1) = 2.0;
+    double rho = 1e4; // 松弛变量的惩罚权重 (增大以优先满足安全)
+    H_qp(2,2) = 2.0 * rho;
+
+    Eigen::Vector3d f_qp;
+    f_qp << -2.0 * u_des(0), -2.0 * u_des(1), 0;
+
+    // 4. 构建约束
+    // lower <= A * x <= upper
+    int n_constraints = 5; // 1 CBF + 2 control_bounds + 1 velocity_bound + 1 slack_bound
+    Eigen::SparseMatrix<double> A_sparse(n_constraints, n_vars);
+    Eigen::VectorXd lower_bound(n_constraints);
+    Eigen::VectorXd upper_bound(n_constraints);
+
+    std::vector<Eigen::Triplet<double>> triplets;
+
+    // CBF 约束: A_cbf * u - s <= b_cbf
+    // A_cbf = -[∇h₃*Ts, ∇h₂*Ts]
+    // b_cbf = -(-gamma*h_k - [∇h₀, ∇h₁] * [Ts*v*cosθ, Ts*v*sinθ]ᵀ)
+    // 整理为: (∇h₃*Ts)*a + (∇h₂*Ts)*w >= -γ*h_k - (∇h₀*Ts*v*cosθ + ∇h₁*Ts*v*sinθ)
+    // 乘以-1得到 <= 形式: -(∇h₃*Ts)*a - (∇h₂*Ts)*w <= γ*h_k + (∇h₀*Ts*v*cosθ + ∇h₁*Ts*v*sinθ)
+    double gamma = 1.0; // CBF 增益 (可调)
+
+    double A_cbf_a = -grad_h(3) * Ts_;
+    double A_cbf_w = -grad_h(2) * Ts_;
+    triplets.emplace_back(0, 0, A_cbf_a); // a的系数
+    triplets.emplace_back(0, 1, A_cbf_w); // w的系数
+    triplets.emplace_back(0, 2, -1.0);    // s的系数
+
+    double drift_term = grad_h(0) * Ts_ * v * cos(theta) + grad_h(1) * Ts_ * v * sin(theta);
+    double b_cbf = gamma * h_k + drift_term;
+
+    lower_bound(0) = -OsqpEigen::INFTY;
+    upper_bound(0) = b_cbf;
+
+    // 控制输入约束 (a_min <= a <= a_max, w_min <= w <= w_max)
+    triplets.emplace_back(1, 0, 1.0);
+    lower_bound(1) = a_min_;
+    upper_bound(1) = a_max_;
+    triplets.emplace_back(2, 1, 1.0);
+    lower_bound(2) = w_min_;
+    upper_bound(2) = w_max_;
+
+    // 速度约束 (0 <= v_k + Ts*a <= v_max)
+    triplets.emplace_back(3, 0, 1.0);
+    lower_bound(3) = (0 - v) / Ts_;
+    upper_bound(3) = (v_max_ - v) / Ts_;
+
+    // 松弛变量约束 (s >= 0)
+    triplets.emplace_back(4, 2, 1.0);
+    lower_bound(4) = 0;
+    upper_bound(4) = OsqpEigen::INFTY;
+
+    A_sparse.setFromTriplets(triplets.begin(), triplets.end());
+
+    // 5. OSQP 求解
+    OsqpEigen::Solver solver;
+    solver.settings()->setVerbosity(false);
+    solver.settings()->setWarmStart(true);
+
+    solver.data()->setNumberOfVariables(n_vars);
+    solver.data()->setNumberOfConstraints(n_constraints);
+    Eigen::SparseMatrix<double> H_sparse = H_qp.sparseView();
+    solver.data()->setHessianMatrix(H_sparse);
+    solver.data()->setGradient(f_qp);
+    solver.data()->setLinearConstraintsMatrix(A_sparse);
+    solver.data()->setLowerBound(lower_bound);
+    solver.data()->setUpperBound(upper_bound);
+    solver.initSolver();
+    solver.solveProblem();
+    if (solver.getStatus() != OsqpEigen::Status::Solved) {
+        u_safe.setZero();
+        return false;
+    }
+
+    Eigen::VectorXd solution = solver.getSolution();
+    u_safe = solution.head<2>();
+
+    return true;
+}
+
 void DiffDriveMPC::generateDistanceMap() {
-    // Convert costmap to grid_map
-    map_.setGeometry(grid_map::Length(costmap_ptr_->getSizeInMetersX(), costmap_ptr_->getSizeInMetersY()),
+    sdf_.setGeometry(grid_map::Length(costmap_ptr_->getSizeInMetersX(), costmap_ptr_->getSizeInMetersY()),
                           costmap_ptr_->getResolution());
-    map_.setPosition(grid_map::Position(costmap_ptr_->getOriginX()+costmap_ptr_->getSizeInMetersX()/2.0,
+    sdf_.setPosition(grid_map::Position(costmap_ptr_->getOriginX()+costmap_ptr_->getSizeInMetersX()/2.0,
                                              costmap_ptr_->getOriginY()+costmap_ptr_->getSizeInMetersY()/2.0));
     // 添加层到gridMap
     grid_map::Costmap2DConverter<grid_map::GridMap,
             grid_map::Costmap2DDirectTranslationTable> costmap2d_converter;
-    costmap2d_converter.addLayerFromCostmap2D(*costmap_ptr_, "obstacle", map_);
+    costmap2d_converter.addLayerFromCostmap2D(*costmap_ptr_, "obstacle", sdf_);
 
-    // Compute signed distance field.
-    // Obstacles are cells with values between 0.1 and 1.1.
-    sdf_ = std::make_unique<grid_map::SignedDistanceField>(
-        map_, "obstacle", costmap_2d::LETHAL_OBSTACLE, costmap_2d::LETHAL_OBSTACLE);
+    // 获取obstacle层的Eigen矩阵引用
+    auto& obstacle_layer = sdf_["obstacle"];
+    // 0变255，其它变0; ros无障碍物时为0, 此处无障碍物时为255，有障碍物时为0，所以需要转换
+    obstacle_layer = (obstacle_layer.array() == 0).cast<float>() * 255.f;
+
+    // Update distance layer.
+    Eigen::Matrix<unsigned char, Eigen::Dynamic, Eigen::Dynamic> binary =
+            sdf_.get("obstacle").cast<unsigned char>();
+    cv::distanceTransform(eigen2cv(binary), eigen2cv(sdf_.get("distance")),
+                          CV_DIST_L2, CV_DIST_MASK_PRECISE);
+    auto map_resolution = costmap_ptr_->getResolution();
+    ROS_INFO("map resolution:%f", map_resolution);
+    sdf_.get("distance") *= map_resolution;
+}
+
+nav_msgs::OccupancyGrid DiffDriveMPC::getSdfAsOccupancyGrid() const {
+    nav_msgs::OccupancyGrid occupancy_grid;
+    if (sdf_.exists("distance")) {
+        float min_val = sdf_.get("distance").minCoeffOfFinites();
+        float max_val = sdf_.get("distance").maxCoeffOfFinites();
+        grid_map::GridMapRosConverter::toOccupancyGrid(sdf_, "distance", min_val, max_val, occupancy_grid);
+    }
+    return occupancy_grid;
+}
+
+geometry_msgs::PoseArray DiffDriveMPC::getSdfGradientsAsArrows() const {
+    return sdf_gradients_;
 }
