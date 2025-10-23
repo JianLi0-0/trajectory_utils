@@ -4,7 +4,9 @@
 #include <Eigen/Dense>
 #include <geometry_msgs/PoseStamped.h>
 #include <costmap_2d/costmap_2d.h>
-#include <costmap_2d/cost_values.h>
+#include <grid_map_core/grid_map_core.hpp>
+#include <grid_map_sdf/SignedDistanceField.hpp>
+#include <memory>
 
 /**
  * @brief N步线性化差速轮MPC类
@@ -26,9 +28,12 @@ public:
     bool solve(const Eigen::Vector4d &state, const Eigen::Vector2d &target, double d_des, Eigen::Vector2d &u_opt);
 
     const std::vector<geometry_msgs::PoseStamped>& getTrajectory() const { return mpc_traj_; }
+
     const std::vector<geometry_msgs::PoseStamped>& getReferenceTrajectory() const { return reference_traj_; }
 
 private:
+    void generateDistanceMap();
+
     int N_, n_state_, n_control_;
     double Ts_;
     double w_a_, w_omega_;
@@ -38,6 +43,8 @@ private:
     std::vector<geometry_msgs::PoseStamped> mpc_traj_;
     std::vector<geometry_msgs::PoseStamped> reference_traj_;
     costmap_2d::Costmap2D* costmap_ptr_;
+    grid_map::GridMap map_;
+    std::unique_ptr<grid_map::SignedDistanceField> sdf_;
 };
 
 #endif //DIFF_DRIVE_MPC_H

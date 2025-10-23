@@ -1,10 +1,14 @@
 #include "diff_drive_mpc.h"
-#include <OsqpEigen/OsqpEigen.h>
 #include <vector>
 #include <cmath>
 #include <tf/transform_datatypes.h>
+#include <costmap_2d/cost_values.h>
+#include <grid_map_ros/grid_map_ros.hpp>
+#include <grid_map_costmap_2d/Costmap2DConverter.hpp>
+#include <OsqpEigen/OsqpEigen.h>
 
 using namespace Eigen;
+using namespace grid_map;
 
 DiffDriveMPC::DiffDriveMPC(int N, double Ts, costmap_2d::Costmap2D* costmap_ptr)
     : N_(N), Ts_(Ts), n_state_(4), n_control_(2),
@@ -317,4 +321,22 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
 
     last_u_ = u_opt;
     return true;
+}
+
+// std::pair<double, SignedDistanceField::Derivative3> SignedDistanceField::valueAndDerivative(const Position3& position)
+void DiffDriveMPC::generateDistanceMap() {
+    // Convert costmap to grid_map
+    map_.setGeometry(grid_map::Length(costmap_ptr_->getSizeInMetersX(), costmap_ptr_->getSizeInMetersY()),
+                          costmap_ptr_->getResolution());
+    map_.setPosition(grid_map::Position(costmap_ptr_->getOriginX()+costmap_ptr_->getSizeInMetersX()/2.0,
+                                             costmap_ptr_->getOriginY()+costmap_ptr_->getSizeInMetersY()/2.0));
+    // 添加层到gridMap
+    grid_map::Costmap2DConverter<grid_map::GridMap,
+            grid_map::Costmap2DDirectTranslationTable> costmap2d_converter;
+    costmap2d_converter.addLayerFromCostmap2D(*costmap_ptr_, "obstacle", map_);
+
+    // Compute signed distance field.
+    // Obstacles are cells with values between 0.1 and 1.1.
+    sdf_ = std::make_unique<grid_map::SignedDistanceField>(
+        map_, "obstacle", costmap_2d::LETHAL_OBSTACLE, costmap_2d::LETHAL_OBSTACLE);
 }
