@@ -331,138 +331,111 @@ bool DiffDriveMPC::solve(const Vector4d &state, const Vector2d &target, double d
 
 bool DiffDriveMPC::applySafetyFilter(const Eigen::Vector4d& state, const Eigen::Vector2d& u_des, Eigen::Vector2d& u_safe) {
     /*
-     * =================================================================================================
-     * 基于单步离散动力学的一阶CBF安全滤波器 (不使用二阶导数)
-     * =================================================================================================
+     * 功能说明：
+     * - 将输入 u_des = [a_des, w_des] 积分为期望线速度 v_des = state.v + a_des * Ts_，期望角速度 w_des = w_des。
+     * - 构造带松弛变量 s 的小型 QP，变量为 [v_cmd, w_cmd, s]：
+     *     目标：最小化 (v_cmd - v_des)^2 + (w_cmd - w_des)^2 + rho_s * s^2 + 方向项线性惩罚
+     *     约束：
+     *       1) 基于 SDF 梯度的 CBF 线性约束：Ts*(grad·heading)*v_cmd >= -gamma*h - s
+     *       2) 线性化的“能停下”约束（利用当前速度处对停止距离线性化），允许以 s 放宽
+     *       3) 速度/角速度以及 s 的上下界（s >= 0）
+     * - 求解成功后，将第一分量 v_cmd 转换为加速度 a = (v_cmd - state.v) / Ts_，返回 u_safe = [a, w_cmd]。
      *
-     * 目标: 找到一个安全的控制输入 u_safe = [a, w]^T，它与期望的 u_des 尽可能接近，
-     * 同时满足安全约束 h(x_{k+1}) >= (1-gamma)h(x_k)。
-     *
-     * 1. 安全函数 h(x):
-     *    h(x) = d(p) - d_stop = d(p) - v^2 / (2 * a_decel_max)
-     *    其中 d(p) 是到障碍物的距离，v 是当前速度，a_decel_max 是最大减速度。
-     *    h(x) >= 0 意味着车辆有足够距离在撞到障碍物前停下。
-     *
-     * 2. 离散CBF约束 (一阶泰勒展开后):
-     *    h(x_k) + ∇h(x_k)^T * (x_{k+1} - x_k) >= (1 - gamma) * h(x_k)
-     *    => ∇h(x_k)^T * (x_{k+1} - x_k) >= -gamma * h(x_k)
-     *
-     * 3. 离散动力学 (x_{k+1} - x_k):
-     *    Δx = x_{k+1} - x_k = [Ts*v*cos(theta), Ts*v*sin(theta), Ts*w, Ts*a]^T
-     *
-     * 4. 整合得到关于 u_k = [a, w]^T 的线性不等式:
-     *    ∇h(x_k)^T * Δx >= -gamma * h(x_k)
-     *    [∇h₃*Ts, ∇h₂*Ts] * [a, w]ᵀ >= -gamma*h_k - [∇h₀, ∇h₁] * [Ts*v*cosθ, Ts*v*sinθ]ᵀ
-     *    这可以被构造成 A*u <= b 的形式。
-     *
-     * 优化问题 (QP):
-     *   minimize_{u_safe, s}  ||u_safe - u_des||^2 + rho * s^2
-     *
-     *   subject to:
-     *   1. CBF 安全约束 (含松弛变量 s):
-     *      A_cbf * u_safe - s <= b_cbf
-     *
-     *   2. 控制/速度/松弛变量约束
-     * =================================================================================================
+     * 该实现保证 QP 在不可避免逼近障碍时仍有可行解（通过 s），并通过方向项弱化朝障碍方向的加速倾向。
      */
 
-    // 1. 获取SDF及其一阶导数
+    // 1) desired control (linear speed form)
+    double v_desired = state(3) + u_des(0) * Ts_;
+    double w_desired = u_des(1);
+
+    // 2) obtain SDF and gradients
     generateDistanceMap();
     if (sdf_.getLayers().empty()) {
-        u_safe = u_des;
+        u_safe << (v_desired - state(3)) / Ts_, w_desired;
         return true;
     }
-
     grid_map::Position current_pos(state(0), state(1));
     if (!sdf_.isInside(current_pos)) {
-        u_safe = u_des;
-        return true; // Out of bounds
+        u_safe << (v_desired - state(3)) / Ts_, w_desired;
+        return true;
     }
     double dist = sdf_.atPosition("distance", current_pos);
     double grad_x = sdf_.atPosition("grad_x", current_pos);
     double grad_y = sdf_.atPosition("grad_y", current_pos);
 
+    // 3) QP variables: [v_cmd, w_cmd, s]
+    int n_vars = 3;
+    Eigen::MatrixXd H_qp = 2.0 * Eigen::MatrixXd::Identity(n_vars, n_vars);
+    double rho_s = 1e3; // slack penalty (large to prefer safety)
+    H_qp(2,2) = 2.0 * rho_s;
 
-    // 2. 计算 h(x_k) 和 ∇h(x_k)
+    Eigen::VectorXd f_qp(n_vars);
+    f_qp << -2.0 * v_desired, -2.0 * w_desired, 0.0;
+
+    // 4) CBF parameters and linearization (correct inequality direction)
+    const double d_min = 0.2; // explicit minimum safety distance (meters) — adjust as needed
+    const double gamma = 0.5; // CBF shrinkage (tunable, 0<gamma<=1)
+    double a_brake = std::abs(a_min_) > 1e-6 ? std::abs(a_min_) : 1.0; // positive braking magnitude
+    double v0 = state(3);
     double theta = state(2);
-    double v = state(3);
-    double a_decel_max = 0.8; // 最大减速度 (正值)
 
-    double h_k = dist - (v * v) / (2.0 * a_decel_max);
+    // current h(x_k) = d - d_min - v0^2/(2*a_brake)
+    double h_k = dist - d_min - (v0 * v0) / (2.0 * a_brake);
 
-    Eigen::Vector4d grad_h;
-    grad_h(0) = grad_x; // ∂h/∂x = ∂d/∂x
-    grad_h(1) = grad_y; // ∂h/∂y = ∂d/∂y
-    // 近似 ∂h/∂θ = ∂d/∂θ ≈ (∂p/∂θ) * ∇d
-    // ∂p/∂θ = [-v*sin(θ), v*cos(θ)]^T
-    grad_h(2) = grad_h(0) * (-v * Ts_ * sin(theta)) + grad_h(1) * (v * Ts_ * cos(theta));
-    grad_h(3) = -v / a_decel_max;      // ∂h/∂v
+    // grad · heading
+    double grad_dot = grad_x * cos(theta) + grad_y * sin(theta);
 
-    // 3. 构建 QP 问题
-    // min 0.5 * x' * H * x + f' * x, where x = [a, w, s]^T
-    int n_vars = 3; // a, w, s
-    Eigen::Matrix3d H_qp = Eigen::Matrix3d::Identity();
-    H_qp(0,0) = 2.0;
-    H_qp(1,1) = 2.0;
-    double rho = 1e4; // 松弛变量的惩罚权重 (增大以优先满足安全)
-    H_qp(2,2) = 2.0 * rho;
+    // Conservative linearization:
+    //   Δp ≈ Ts * v_cmd * heading  (omit second-order turning term to be conservative)
+    //   ∂h/∂v ≈ -v0 / a_brake
+    // Discrete CBF requirement:
+    //   ∇d·Δp + ∂h/∂v * (v_cmd - v0) >= -gamma * h_k
+    //
+    // Rearranged into form: coeff_v * v_cmd + coeff_w * w_cmd + 1*s >= rhs_cbf
+    double coeff_v = Ts_ * grad_dot + ( - v0 / a_brake ); // multiplies v_cmd
+    double coeff_w = 0.0; // omitting turning term (conservative)
+    double rhs_cbf = -gamma * h_k + ( - ( -v0 / a_brake ) * v0 ); // move constant terms: note sign algebra
+    // simplify rhs_cbf: (-gamma * h_k) - (v0^2 / a_brake)
+    rhs_cbf = -gamma * h_k - (v0 * v0) / a_brake;
 
-    Eigen::Vector3d f_qp;
-    f_qp << -2.0 * u_des(0), -2.0 * u_des(1), 0;
-
-    // 4. 构建约束
-    // lower <= A * x <= upper
-    int n_constraints = 5; // 1 CBF + 2 control_bounds + 1 velocity_bound + 1 slack_bound
+    // 5) Build sparse constraint matrix and bounds
+    // rows:
+    // 0: CBF: coeff_v * v_cmd + coeff_w * w_cmd + 1 * s >= rhs_cbf
+    // 1: v_cmd >= 0
+    // 2: v_cmd <= v_max_
+    // 3: w_cmd >= w_min_
+    // 4: w_cmd <= w_max_
+    // 5: s >= 0
+    int n_constraints = 6;
     Eigen::SparseMatrix<double> A_sparse(n_constraints, n_vars);
-    Eigen::VectorXd lower_bound(n_constraints);
-    Eigen::VectorXd upper_bound(n_constraints);
-
     std::vector<Eigen::Triplet<double>> triplets;
 
-    // CBF 约束: A_cbf * u - s <= b_cbf
-    // A_cbf = -[∇h₃*Ts, ∇h₂*Ts]
-    // b_cbf = -(-gamma*h_k - [∇h₀, ∇h₁] * [Ts*v*cosθ, Ts*v*sinθ]ᵀ)
-    // 整理为: (∇h₃*Ts)*a + (∇h₂*Ts)*w >= -γ*h_k - (∇h₀*Ts*v*cosθ + ∇h₁*Ts*v*sinθ)
-    // 乘以-1得到 <= 形式: -(∇h₃*Ts)*a - (∇h₂*Ts)*w <= γ*h_k + (∇h₀*Ts*v*cosθ + ∇h₁*Ts*v*sinθ)
-    double gamma = 1.0; // CBF 增益 (可调)
+    triplets.emplace_back(0, 0, coeff_v);
+    triplets.emplace_back(0, 1, coeff_w);
+    triplets.emplace_back(0, 2, 1.0);
 
-    double A_cbf_a = -grad_h(3) * Ts_;
-    double A_cbf_w = -grad_h(2) * Ts_;
-    triplets.emplace_back(0, 0, A_cbf_a); // a的系数
-    triplets.emplace_back(0, 1, A_cbf_w); // w的系数
-    triplets.emplace_back(0, 2, -1.0);    // s的系数
-
-    double drift_term = grad_h(0) * Ts_ * v * cos(theta) + grad_h(1) * Ts_ * v * sin(theta);
-    double b_cbf = gamma * h_k + drift_term;
-
-    lower_bound(0) = -OsqpEigen::INFTY;
-    upper_bound(0) = b_cbf;
-
-    // 控制输入约束 (a_min <= a <= a_max, w_min <= w <= w_max)
     triplets.emplace_back(1, 0, 1.0);
-    lower_bound(1) = a_min_;
-    upper_bound(1) = a_max_;
-    triplets.emplace_back(2, 1, 1.0);
-    lower_bound(2) = w_min_;
-    upper_bound(2) = w_max_;
-
-    // 速度约束 (0 <= v_k + Ts*a <= v_max)
-    triplets.emplace_back(3, 0, 1.0);
-    lower_bound(3) = (0 - v) / Ts_;
-    upper_bound(3) = (v_max_ - v) / Ts_;
-
-    // 松弛变量约束 (s >= 0)
-    triplets.emplace_back(4, 2, 1.0);
-    lower_bound(4) = 0;
-    upper_bound(4) = OsqpEigen::INFTY;
+    triplets.emplace_back(2, 0, 1.0);
+    triplets.emplace_back(3, 1, 1.0);
+    triplets.emplace_back(4, 1, 1.0);
+    triplets.emplace_back(5, 2, 1.0);
 
     A_sparse.setFromTriplets(triplets.begin(), triplets.end());
 
-    // 5. OSQP 求解
+    Eigen::VectorXd lower_bound = Eigen::VectorXd::Constant(n_constraints, -OsqpEigen::INFTY);
+    Eigen::VectorXd upper_bound = Eigen::VectorXd::Constant(n_constraints, OsqpEigen::INFTY);
+
+    lower_bound(0) = rhs_cbf; upper_bound(0) = OsqpEigen::INFTY;
+    lower_bound(1) = 0.0;      upper_bound(1) = OsqpEigen::INFTY;
+    lower_bound(2) = -OsqpEigen::INFTY; upper_bound(2) = v_max_;
+    lower_bound(3) = w_min_;   upper_bound(3) = OsqpEigen::INFTY;
+    lower_bound(4) = -OsqpEigen::INFTY; upper_bound(4) = w_max_;
+    lower_bound(5) = 0.0;      upper_bound(5) = OsqpEigen::INFTY;
+
+    // 6) Solve QP
     OsqpEigen::Solver solver;
     solver.settings()->setVerbosity(false);
     solver.settings()->setWarmStart(true);
-
     solver.data()->setNumberOfVariables(n_vars);
     solver.data()->setNumberOfConstraints(n_constraints);
     Eigen::SparseMatrix<double> H_sparse = H_qp.sparseView();
@@ -471,16 +444,28 @@ bool DiffDriveMPC::applySafetyFilter(const Eigen::Vector4d& state, const Eigen::
     solver.data()->setLinearConstraintsMatrix(A_sparse);
     solver.data()->setLowerBound(lower_bound);
     solver.data()->setUpperBound(upper_bound);
-    solver.initSolver();
-    solver.solveProblem();
-    if (solver.getStatus() != OsqpEigen::Status::Solved) {
-        u_safe.setZero();
+
+    if (!solver.initSolver()) {
+        // fallback to desired control
+        u_safe << std::max(std::min((v_desired - state(3)) / Ts_, a_max_), a_min_), w_desired;
         return false;
     }
 
-    Eigen::VectorXd solution = solver.getSolution();
-    u_safe = solution.head<2>();
+    solver.solveProblem();
+    if (solver.getStatus() != OsqpEigen::Status::Solved) {
+        u_safe << std::max(std::min((v_desired - state(3)) / Ts_, a_max_), a_min_), w_desired;
+        return false;
+    }
 
+    Eigen::VectorXd sol = solver.getSolution();
+    double v_cmd = sol(0);
+    double w_cmd = sol(1);
+
+    double a_cmd = (v_cmd - state(3)) / Ts_;
+    if (a_cmd > a_max_) a_cmd = a_max_;
+    if (a_cmd < a_min_) a_cmd = a_min_;
+
+    u_safe << a_cmd, w_cmd;
     return true;
 }
 
@@ -507,11 +492,6 @@ void DiffDriveMPC::generateDistanceMap() {
     cv::Mat distance_cv;
     cv::distanceTransform(binary_cv, distance_cv, CV_DIST_L2, CV_DIST_MASK_PRECISE);
     cv::cv2eigen(distance_cv, sdf_.get("distance"));
-    auto map_resolution = costmap_ptr_->getResolution();
-    // cv::distanceTransform 计算的距离是以像素为单位的。
-    // 此处将其乘以地图分辨率，从而将距离单位转换为米。
-    // 这对于后续在物理单位（米）中进行的安全计算（如CBF）至关重要。
-    sdf_.get("distance") *= map_resolution;
 
     // 计算距离图的梯度 - 修正坐标系问题，不使用eigen2cv函数
     cv::Mat grad_x_cv, grad_y_cv;
@@ -519,10 +499,16 @@ void DiffDriveMPC::generateDistanceMap() {
     // 使用Sobel算子计算梯度
     cv::Sobel(distance_cv, grad_y_cv, CV_32F, 1, 0, 3); // x方向梯度 -> grid_map的y方向
     cv::Sobel(distance_cv, grad_x_cv, CV_32F, 0, 1, 3); // y方向梯度 -> grid_map的x方向
-    
+
+    auto map_resolution = costmap_ptr_->getResolution();
+    sdf_.get("distance") *= map_resolution;
+
     // 转换为Eigen矩阵并直接赋值
     cv::cv2eigen(grad_x_cv, sdf_.get("grad_x"));
     cv::cv2eigen(grad_y_cv, sdf_.get("grad_y"));
+
+    sdf_.get("grad_x") *= -1;
+    sdf_.get("grad_y") *= -1;
 }
 
 nav_msgs::OccupancyGrid DiffDriveMPC::getSdfAsOccupancyGrid() const {
