@@ -29,6 +29,9 @@ public:
 
     bool applySafetyFilter(const Eigen::Vector4d& state, const Eigen::Vector2d& u_des, Eigen::Vector2d& u_safe);
 
+    // New: CBF-based velocity solver: returns linear velocity and angular velocity (v, w)
+    bool cbf_solve(const Eigen::Vector4d &state, const Eigen::Vector2d &target, Eigen::Vector2d &u_opt);
+
     const std::vector<geometry_msgs::PoseStamped>& getTrajectory() const { return mpc_traj_; }
 
     const std::vector<geometry_msgs::PoseStamped>& getReferenceTrajectory() const { return reference_traj_; }

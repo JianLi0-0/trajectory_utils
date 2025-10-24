@@ -334,7 +334,7 @@ bool DiffDriveMPC::applySafetyFilter(const Eigen::Vector4d& state, const Eigen::
      * 功能说明：
      * - 将输入 u_des = [a_des, w_des] 积分为期望线速度 v_des = state.v + a_des * Ts_，期望角速度 w_des = w_des。
      * - 构造带松弛变量 s 的小型 QP，变量为 [v_cmd, w_cmd, s]：
-     *     目标：最小化 (v_cmd - v_des)^2 + (w_cmd - w_des)^2 + rho_s * s^2 + 方向项线性惩罚
+     *     目标：最小化 (v_cmd - v_desired)^2 + (w_cmd - w_desired)^2 + rho_s * s^2 + 方向项线性惩罚
      *     约束：
      *       1) 基于 SDF 梯度的 CBF 线性约束：Ts*(grad·heading)*v_cmd >= -gamma*h - s
      *       2) 线性化的“能停下”约束（利用当前速度处对停止距离线性化），允许以 s 放宽
@@ -466,6 +466,162 @@ bool DiffDriveMPC::applySafetyFilter(const Eigen::Vector4d& state, const Eigen::
     if (a_cmd < a_min_) a_cmd = a_min_;
 
     u_safe << a_cmd, w_cmd;
+    return true;
+}
+
+// New: CBF-based solver that outputs linear velocity and angular velocity (v_cmd, w_cmd)
+bool DiffDriveMPC::cbf_solve(const Vector4d &state, const Vector2d &target, Vector2d &u_opt) {
+    /*
+     * 改进思路：
+     * - 增强目标跟踪权重（尤其角速度权重），使到目标的代价高于单纯横向避障。
+     * - coeff_w 随距离到目标衰减，距离越远角速度对避障约束影响越小（优先直线前往目标）。
+     * - 限幅并缩放避障角速度 w_avoid，远距离时抑制其影响。
+     */
+
+    // 1) 计算几何量
+    Vector2d current_pos = state.head<2>();
+    double dx = target(0) - current_pos(0);
+    double dy = target(1) - current_pos(1);
+    double dist_to_target = std::hypot(dx, dy);
+
+    // 期望线速度由到目标距离决定
+    const double kv = 0.6;
+    double v_desired = std::min(v_max_, kv * dist_to_target);
+
+    // 期望角速度由航向误差决定
+    double angle_to_target = atan2(dy, dx);
+    double angle_error = atan2(sin(angle_to_target - state(2)), cos(angle_to_target - state(2)));
+    double w_desired = 1.0 * angle_error;
+    w_desired = std::max(w_min_, std::min(w_max_, w_desired));
+
+    // 2) 获取 SDF 与梯度
+    generateDistanceMap();
+    if (sdf_.getLayers().empty()) {
+        u_opt << std::max(0.0, std::min(v_desired, v_max_)), w_desired;
+        return false;
+    }
+    grid_map::Position pos(current_pos(0), current_pos(1));
+    if (!sdf_.isInside(pos)) {
+        u_opt << std::max(0.0, std::min(v_desired, v_max_)), w_desired;
+        return false;
+    }
+    double dist = sdf_.atPosition("distance", pos);
+    double grad_x = sdf_.atPosition("grad_x", pos);
+    double grad_y = sdf_.atPosition("grad_y", pos);
+
+    // 额外：靠近障碍时加入避障角速度，但其影响会根据到目标距离被缩放
+    const double avoid_dist_thresh = 1.0;
+    double w_avoid = 0.0;
+    if (dist < avoid_dist_thresh) {
+        double avoid_yaw = atan2(-grad_y, -grad_x); // 指向远离障碍的方向
+        double yaw_err_avoid = atan2(sin(avoid_yaw - state(2)), cos(avoid_yaw - state(2)));
+        const double k_avoid = 1.2;
+        double near_factor = (avoid_dist_thresh - dist) / avoid_dist_thresh; // [0,1]
+        // 减少远离目标时 avoid 的影响：当离目标较远，降低避障角速度强度
+        double target_factor = 1.0 / (1.0 + dist_to_target); // 距离越大，factor 越小
+        w_avoid = k_avoid * yaw_err_avoid * near_factor * target_factor;
+        // 限幅，防止过大叠加
+        w_avoid = std::max(-0.7 * std::abs(w_max_), std::min(0.7 * std::abs(w_max_), w_avoid));
+        w_desired += w_avoid;
+        w_desired = std::max(w_min_, std::min(w_max_, w_desired));
+    }
+
+    // 3) QP 设置：变量 [v_cmd, w_cmd, s]
+    const int n_vars = 3;
+    Eigen::MatrixXd H_qp = Eigen::MatrixXd::Zero(n_vars, n_vars);
+
+    // 调整权重：增加角速度权重以抑制过度转向；角速度权重随到目标距离增加（约在 [5,50]）
+    double w_v = 20.0; // 线速度跟踪权重（保持足够大）
+    double w_w_base = 5.0;
+    double w_w = w_w_base + 10.0 * (dist_to_target / (dist_to_target + 1.0)); // 约在 [5,50]
+    double rho_s = 1e3;
+
+    H_qp(0,0) = 2.0 * w_v;
+    H_qp(1,1) = 2.0 * w_w;
+    H_qp(2,2) = 2.0 * rho_s;
+
+    Eigen::VectorXd f_qp(n_vars);
+    f_qp << -2.0 * w_v * v_desired, -2.0 * w_w * w_desired, 0.0;
+
+    // 4) CBF 约束（加入角速度项，但 coeff_w 随到目标距离衰减）
+    const double d_min = 0.6;
+    const double gamma = 0.5;
+    double theta = state(2);
+
+    double grad_dot = grad_x * cos(theta) + grad_y * sin(theta);
+    double grad_perp = -grad_x * sin(theta) + grad_y * cos(theta);
+
+    const double L = 0.4;
+    double coeff_v = Ts_ * grad_dot;
+    double coeff_w = Ts_ * L * grad_perp;
+
+    // 当离目标较远时，衰减角速度对约束的影响，避免优先横向避障
+    double decay = 1.0 + dist_to_target; // 距离越远衰减越强
+    coeff_w *= (1.0 / decay);
+
+    double rhs = -gamma * (dist - d_min);
+
+    // 5) 构建约束矩阵与上下界
+    const int n_constraints = 6;
+    Eigen::SparseMatrix<double> A_sparse(n_constraints, n_vars);
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.emplace_back(0, 0, coeff_v);
+    triplets.emplace_back(0, 1, coeff_w);
+    triplets.emplace_back(0, 2, 1.0);
+    triplets.emplace_back(1, 0, 1.0); // v_cmd >= 0
+    triplets.emplace_back(2, 0, 1.0); // v_cmd <= v_max
+    triplets.emplace_back(3, 1, 1.0); // w_cmd >= w_min
+    triplets.emplace_back(4, 1, 1.0); // w_cmd <= w_max
+    triplets.emplace_back(5, 2, 1.0); // s >= 0
+    A_sparse.setFromTriplets(triplets.begin(), triplets.end());
+
+    Eigen::VectorXd lower_bound = Eigen::VectorXd::Constant(n_constraints, -OsqpEigen::INFTY);
+    Eigen::VectorXd upper_bound = Eigen::VectorXd::Constant(n_constraints, OsqpEigen::INFTY);
+
+    lower_bound(0) = rhs;              upper_bound(0) = OsqpEigen::INFTY;
+    lower_bound(1) = 0.0;              upper_bound(1) = OsqpEigen::INFTY;
+    lower_bound(2) = -OsqpEigen::INFTY; upper_bound(2) = v_max_;
+    lower_bound(3) = w_min_;           upper_bound(3) = OsqpEigen::INFTY;
+    lower_bound(4) = -OsqpEigen::INFTY; upper_bound(4) = w_max_;
+    lower_bound(5) = 0.0;              upper_bound(5) = OsqpEigen::INFTY;
+
+    // 6) 求解 QP
+    OsqpEigen::Solver solver;
+    solver.settings()->setVerbosity(false);
+    solver.settings()->setWarmStart(true);
+    solver.data()->setNumberOfVariables(n_vars);
+    solver.data()->setNumberOfConstraints(n_constraints);
+    Eigen::SparseMatrix<double> H_sparse = H_qp.sparseView();
+    solver.data()->setHessianMatrix(H_sparse);
+    solver.data()->setGradient(f_qp);
+    solver.data()->setLinearConstraintsMatrix(A_sparse);
+    solver.data()->setLowerBound(lower_bound);
+    solver.data()->setUpperBound(upper_bound);
+
+    if (!solver.initSolver()) {
+        double v_fb = std::max(0.0, std::min(v_desired, v_max_));
+        double w_fb = std::max(w_min_, std::min(w_desired, w_max_));
+        u_opt << v_fb, w_fb;
+        return false;
+    }
+
+    solver.solveProblem();
+    if (solver.getStatus() != OsqpEigen::Status::Solved) {
+        double v_fb = std::max(0.0, std::min(v_desired, v_max_));
+        double w_fb = std::max(w_min_, std::min(w_desired, w_max_));
+        u_opt << v_fb, w_fb;
+        return false;
+    }
+
+    Eigen::VectorXd sol = solver.getSolution();
+    double v_cmd = sol(0);
+    double w_cmd = sol(1);
+
+    // clamp final outputs
+    v_cmd = std::max(0.0, std::min(v_cmd, v_max_));
+    w_cmd = std::max(w_min_, std::min(w_cmd, w_max_));
+
+    u_opt << v_cmd, w_cmd;
     return true;
 }
 
