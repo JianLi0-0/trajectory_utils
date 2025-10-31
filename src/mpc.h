@@ -89,7 +89,8 @@ private:
     
     std::vector<geometry_msgs::PoseStamped> mpc_traj_;  // MPC计算的预测轨迹
 
-    std::vector<double> kappa_ref_vec_;
+    std::vector<double> kappa_ref_vec_, s_ref_vec_;
+    trajectory_utils::TrajectoryPoint end_point_;
 };
 
 #endif

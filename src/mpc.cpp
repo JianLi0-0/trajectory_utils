@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <Eigen/Dense>
 #include <OsqpEigen/OsqpEigen.h>
+#undef HAVE_QPOASES
 #ifdef HAVE_QPOASES
 #include <qpOASES.hpp>
 #endif
@@ -179,17 +180,25 @@ MatrixXd MPC::solve(
     }
     
     // 合并后的速度约束界限（第2*N到3*N-1行）
+    bool is_set_to_zero = false;
     for (int k = 0; k < N; k++) {
         // 下界
         lower_bound(2*N + k) = v_min_ - current_v;
 
         // 上界
-        double v_max_from_w = v_max_;
-        if (std::abs(kappa_ref_vec_[k]) > 1e-6) {
-            v_max_from_w = 0.8*w_max_ / std::abs(kappa_ref_vec_[k]);
-            v_max_from_w = std::min(v_max_from_w, v_max_);  // 不超过全局最大速度
+        double v_upper_bound = 0.0;
+        if (!is_set_to_zero && (end_point_.path_point().s()- s_ref_vec_[k])<save_distance_) {
+            is_set_to_zero = true;
         }
-        upper_bound(2*N + k) = v_max_from_w - current_v;
+        ROS_WARN("end_point_.path_point().s(): %f, s_ref_vec_[k]: %f, save_distance_: %f, is_set_to_zero: %d",
+                 end_point_.path_point().s(), s_ref_vec_[k], save_distance_, is_set_to_zero);
+        if (!is_set_to_zero) {
+            if (std::abs(kappa_ref_vec_[k]) > 1e-6) {
+                v_upper_bound = 0.8*w_max_ / std::abs(kappa_ref_vec_[k]);
+                v_upper_bound = std::min(v_upper_bound, v_max_);  // 不超过全局最大速度
+            }
+        }
+        upper_bound(2*N + k) = v_upper_bound - current_v;
     }
     
     // 松弛变量非负约束（第3*N到4*N-1行）
@@ -332,6 +341,7 @@ bool MPC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
     std::vector<Eigen::Vector4d> X_r;  // 改为4维状态向量
     std::vector<Eigen::Vector2d> U_r;
     kappa_ref_vec_.clear();
+    s_ref_vec_.clear();
     Eigen::MatrixXd u_k;
     Eigen::Vector3d pos_r, pos_final;
     Eigen::Vector4d X_k;  // 直接定义为4维状态向量
@@ -354,19 +364,19 @@ bool MPC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
 
     ROS_INFO("MPC t_cur: %f,  traj_duration: %f", t_cur, traj_duration_);
 
-    auto end_point = discretized_trajectory->Evaluate(traj_duration_);
-    pos_final << end_point.path_point().x(), end_point.path_point().y(), 0.0;
+    end_point_ = discretized_trajectory->Evaluate(traj_duration_);
+    pos_final << end_point_.path_point().x(), end_point_.path_point().y(), 0.0;
 
-    double remain_s = end_point.path_point().s() - traj_point.path_point().s();
+    double remain_s = end_point_.path_point().s() - traj_point.path_point().s();
 
     if (remain_s < 0.06) {
         ROS_WARN("MPC remain_s < 0.06");
         cout << "traj_point: " << traj_point.DebugString() << std::endl;
-        cout << "end_point: " << end_point.DebugString() << std::endl;
+        cout << "end_point: " << end_point_.DebugString() << std::endl;
         return false;
     }
 
-    std::vector<double> t_vec, x_ref_vec, y_ref_vec, theta_ref_vec, s_ref_vec, v_ref_vec, w_ref_vec, a_ref_vec;
+    std::vector<double> t_vec, x_ref_vec, y_ref_vec, theta_ref_vec, v_ref_vec, w_ref_vec, a_ref_vec;
 
     bool is_orientation_adjust = false;
     bool first_flag = true;
@@ -389,7 +399,7 @@ bool MPC::calculateVelocity(const geometry_msgs::PoseStamped& current_pose,
 
         x_ref_vec.push_back(pos_r(0));
         y_ref_vec.push_back(pos_r(1));
-        s_ref_vec.push_back(pos_r_raw.path_point().s());
+        s_ref_vec_.push_back(pos_r_raw.path_point().s());
 
         v_linear_1 = pos_r_raw.v();
         v_ref_vec.push_back(v_linear_1);
@@ -508,7 +518,7 @@ void MPC::generateReferenceTrajectory(const geometry_msgs::PoseStamped& current_
 
     trajectory_info_.calSpeedData(
             0.0, traj_point.v(), traj_point.a(),
-            trajectory_info_.getPathDataPtr()->Length()-save_distance_, v_max_);
+            trajectory_info_.getPathDataPtr()->Length(), v_max_);
 
     trajectory_info_.combinePathAndSpeedProfile();
 
