@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-#include "proto/pnc_point.pb.h"
+#include "pnc_point.pb.h"
 #include "math/vec2d.h"
 #include "math/line_segment2d.h"
 

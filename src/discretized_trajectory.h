@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "math/vec2d.h"
-#include "proto/pnc_point.pb.h"
+#include "pnc_point.pb.h"
 
 namespace trajectory_utils {
 

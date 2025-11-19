@@ -26,6 +26,10 @@ find_package(Python3 REQUIRED COMPONENTS
         NumPy
 )
 
+find_package(Protobuf REQUIRED)
+set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/proto/pnc_point.proto)
+protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS ${PROTO_FILES})
+
 add_subdirectory(qp_solver/osqp)
 
 catkin_package(
@@ -59,16 +63,18 @@ add_library(${PROJECT_NAME}
         src/math/vec2d.cpp
         src/math/line_segment2d.cpp
         src/mpc.cpp
-        src/proto/pnc_point.pb.cc)
+        ${PROTO_SRCS})
 
 target_include_directories(${PROJECT_NAME} PUBLIC
         src
+        ${Protobuf_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 target_link_libraries(${PROJECT_NAME}
         ${catkin_LIBRARIES}
         ruckig::ruckig
-        protobuf
+        ${Protobuf_LIBRARIES}
         Python3::Python
         Python3::Module
         Python3::NumPy
@@ -77,16 +83,16 @@ target_link_libraries(${PROJECT_NAME}
         $<$<BOOL:${QPOASES_LIBRARY}>:${QPOASES_LIBRARY}>
 )
 
-add_executable(trajectory_info_test src/test.cpp)
-target_link_libraries(trajectory_info_test
-        ${PROJECT_NAME}
-        ${catkin_LIBRARIES}
-        ruckig::ruckig
-        protobuf
-        Python3::Python
-        Python3::Module
-        Python3::NumPy
-)
+#add_executable(trajectory_info_test src/test.cpp)
+#target_link_libraries(trajectory_info_test
+#        ${PROJECT_NAME}
+#        ${catkin_LIBRARIES}
+#        ruckig::ruckig
+#        protobuf
+#        Python3::Python
+#        Python3::Module
+#        Python3::NumPy
+#)
 
 install(TARGETS ${PROJECT_NAME}
         ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

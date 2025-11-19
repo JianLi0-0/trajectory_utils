@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cmath>
-#include "../proto/pnc_point.pb.h"
+#include "pnc_point.pb.h"
 
 /**
  * @namespace trajectory_utils::common::math

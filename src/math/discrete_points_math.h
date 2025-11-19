@@ -2,7 +2,7 @@
 
 #include <utility>
 #include <vector>
-#include "../proto/pnc_point.pb.h"
+#include "pnc_point.pb.h"
 
 namespace trajectory_utils {
 
